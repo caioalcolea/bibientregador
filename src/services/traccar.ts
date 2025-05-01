@@ -3,6 +3,7 @@ import type { Posicao, Dispositivo } from "@/lib/types";
 
 /**
  * Represents a position input specifically for the Traccar OsmAnd HTTP protocol.
+ * This is the data structure expected by the internal API route.
  */
 export interface TraccarPositionInput {
   uniqueId: string; // Traccar unique ID (usually IMEI or configured ID)
@@ -17,9 +18,8 @@ export interface TraccarPositionInput {
 }
 
 
-// Base URL for Traccar API/OsmAnd endpoint
+// Base URL for Traccar API endpoint (Used for fetching devices, not sending position directly from client now)
 const TRACCAR_API_BASE_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // Use environment variable for API base
-const TRACCAR_OSMAND_ENDPOINT_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // OsmAnd might be the same or different
 const TRACCAR_API_CREDENTIALS = process.env.NEXT_PUBLIC_TRACCAR_API_CREDENTIALS; // Format: "username:password"
 
 // Function to safely get Base64 encoded credentials
@@ -44,68 +44,52 @@ const getEncodedCredentials = (): string | null => {
 };
 
 /**
- * Sends position data to Traccar using the OsmAnd HTTP protocol format.
+ * Sends position data to our internal Next.js API route, which will then forward it to Traccar.
+ * This avoids direct client-side calls to Traccar, mitigating CORS issues.
  * @param position - The position data matching the TraccarPositionInput interface.
- * @returns A promise that resolves to true if the request was likely successful (received 2xx response), false otherwise.
+ * @returns A promise that resolves to true if the API route accepted the request, false otherwise.
  */
 export async function sendPositionToTraccar(position: TraccarPositionInput): Promise<boolean> {
-  const params = new URLSearchParams();
-  params.append('id', position.uniqueId);
-  params.append('lat', position.latitude.toString());
-  params.append('lon', position.longitude.toString());
-  params.append('timestamp', position.timestamp.toString());
-
-  if (position.altitude !== undefined) params.append('altitude', position.altitude.toString());
-  // OsmAnd protocol expects speed in km/h, Traccar converts internally if needed.
-  // The input 'speed' is expected in knots based on interface, let's send it as is.
-  // Traccar handles various units. If issues arise, adjust conversion here.
-  if (position.speed !== undefined) params.append('speed', position.speed.toString());
-  if (position.bearing !== undefined) params.append('bearing', position.bearing.toString());
-  if (position.accuracy !== undefined) params.append('accuracy', position.accuracy.toString());
-  if (position.batt !== undefined) params.append('batt', position.batt.toString());
-
-  // Use the specific OsmAnd endpoint URL
-  const url = `${TRACCAR_OSMAND_ENDPOINT_URL}/?${params.toString()}`;
-  console.log(`Traccar Send Position URL: ${url}`); // Log URL for debugging
+  const apiUrl = '/api/traccar/position'; // Internal API route path
+  console.log(`Traccar Proxy: Sending position data for ${position.uniqueId} to internal API route ${apiUrl}`);
 
   try {
-    // OsmAnd protocol typically uses POST, even with params in URL
-    const response = await fetch(url, {
-        method: 'POST', // Keep POST as OsmAnd often expects it
+    const response = await fetch(apiUrl, {
+        method: 'POST',
         headers: {
-          // Add a basic Content-Type header. Even though there's no body,
-          // this can sometimes help with CORS or server expectations for POST.
-          'Content-Type': 'text/plain',
-        }
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(position), // Send data in the body
     });
+
     if (response.ok) {
-      // Even with 2xx, read the response text as OsmAnd might return info/errors in the body
-      const responseText = await response.text();
-      // Check for specific success/error strings if the protocol defines them
-      if (responseText.toUpperCase().includes("ERROR")) {
-         console.error(`Traccar Send Position: Server responded OK but returned error message for device ${position.uniqueId}: ${responseText}`);
-         return false;
-      }
-      console.log(`Traccar Send Position: Success for device ${position.uniqueId}. Response: ${responseText || '<empty>'}`);
-      return true;
+        const result = await response.json();
+        if (result.success) {
+             console.log(`Traccar Proxy: Internal API route successfully processed position for ${position.uniqueId}.`);
+             return true;
+        } else {
+             console.error(`Traccar Proxy: Internal API route failed to process position for ${position.uniqueId}. Reason: ${result.error || 'Unknown error'}`);
+             return false;
+        }
     } else {
       const errorText = await response.text();
-      console.error(`Traccar Send Position: Failed for device ${position.uniqueId}. Status: ${response.status} ${response.statusText}. Response: ${errorText}`);
+      console.error(`Traccar Proxy: Failed to call internal API route for device ${position.uniqueId}. Status: ${response.status} ${response.statusText}. Response: ${errorText}`);
       return false;
     }
   } catch (error) {
-    console.error(`Traccar Send Position: Network or other error for device ${position.uniqueId}:`, error);
-    // Add specific error handling if needed (e.g., CORS error detection)
+    console.error(`Traccar Proxy: Network or other error calling internal API route for device ${position.uniqueId}:`, error);
     if (error instanceof TypeError && error.message === 'Failed to fetch') {
-         console.error("Traccar Send Position: 'Failed to fetch' error. Possible causes: CORS issue, network error, invalid URL, or mixed content.");
+         console.error("Traccar Proxy: 'Failed to fetch' error calling internal API. Check network or if the API route is running.");
     }
     return false;
   }
 }
 
+
 /**
  * Fetches all devices from the Traccar API.
  * Requires Basic Authentication credentials set in environment variables.
+ * This function can still be called from the client if needed, but ensure CORS is handled for this endpoint on the Traccar server OR use an API route proxy.
  * @returns A promise that resolves to an array of Traccar Devices.
  * @throws An error if credentials are missing or the API call fails.
  */
@@ -144,7 +128,9 @@ export async function getTraccarDevices(): Promise<Dispositivo[]> {
     console.error("Traccar Get Devices: Network or other error:", error);
     // Rethrow with a more specific message if possible
     if (error.message.includes('Failed to fetch')) {
-         throw new Error("Network error while fetching Traccar devices. Check URL and connectivity.");
+         // This might indicate CORS issue if called from client, or network issue
+         console.error("Traccar Get Devices: 'Failed to fetch' error. Possible CORS issue if called from client, network error, or invalid URL.");
+         throw new Error("Network error or CORS issue while fetching Traccar devices.");
     }
     throw new Error(error.message || "Error fetching Traccar devices.");
   }
@@ -186,6 +172,10 @@ export async function verifyTraccarCredentials(): Promise<boolean> {
         }
     } catch (error) {
         console.error("Traccar Verify Credentials: Network or other error:", error);
+         // Add specific error handling if needed (e.g., CORS error detection)
+         if (error instanceof TypeError && error.message === 'Failed to fetch') {
+            console.error("Traccar Verify Credentials: 'Failed to fetch' error. Possible CORS issue, network error, invalid URL, or mixed content.");
+         }
         return false;
     }
 }
