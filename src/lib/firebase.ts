@@ -1,9 +1,9 @@
 
 // src/lib/firebase.ts
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getAuth } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getFunctions } from "firebase/functions";
+import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
+import { getAuth, type Auth } from "firebase/auth";
+import { getFirestore, type Firestore } from "firebase/firestore";
+import { getFunctions, type Functions } from "firebase/functions";
 // Uncomment if Analytics is needed and configured
 // import { getAnalytics, isSupported } from "firebase/analytics";
 
@@ -39,6 +39,7 @@ import { getFunctions } from "firebase/functions";
 
 
 // --- Pre-check Environment Variables ---
+// Access environment variables safely, ensuring they are read correctly on both server and client.
 const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
 const authDomain = process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
 const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
@@ -47,25 +48,28 @@ const messagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
 const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
 const measurementId = process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID; // Optional
 
-// Log the API key value as seen by the server/build process for debugging
-console.log("Firebase Config Check (firebase.ts): NEXT_PUBLIC_FIREBASE_API_KEY =", apiKey ? `"${apiKey.substring(0, 5)}...${apiKey.substring(apiKey.length - 4)}"` : "NOT FOUND/UNDEFINED"); // Log truncated key
+// Log the API key value as seen by the process for debugging
+// Use typeof window !== 'undefined' to differentiate client/server logs if needed
+// console.log(`Firebase Config Check (firebase.ts - ${typeof window !== 'undefined' ? 'Client' : 'Server'}): NEXT_PUBLIC_FIREBASE_API_KEY =`, apiKey ? `"${apiKey.substring(0, 5)}...${apiKey.substring(apiKey.length - 4)}"` : "NOT FOUND/UNDEFINED"); // Log truncated key
 
 
 // --- Validate Required Variables ---
 if (!apiKey) {
+    // This console.error IS the guidance. If you see this, fix your .env.local
     console.error("🔥🔥🔥 FATAL ERROR: Firebase API Key (NEXT_PUBLIC_FIREBASE_API_KEY) is missing or undefined.");
     console.error("🔥🔥🔥 Please ensure it is set correctly in your .env.local file and you have restarted the server.");
-    // Optionally, throw an error to prevent the app from trying to initialize Firebase without a key.
-    // This might be too aggressive depending on the setup, but helpful for debugging.
-    throw new Error("Firebase API Key is missing. Check server logs and .env.local.");
+    // Throwing an error might be too disruptive depending on where firebase is imported.
+    // Logging the error clearly is often sufficient for developers to fix their env.
+    // Consider throwing ONLY if Firebase absolutely cannot function without it immediately.
+    // throw new Error("Firebase API Key is missing. Check console logs and .env.local.");
 }
-if (!authDomain) console.warn("Firebase Config Warning: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN is missing.");
-if (!projectId) console.warn("Firebase Config Warning: NEXT_PUBLIC_FIREBASE_PROJECT_ID is missing.");
-// Add checks for other essential variables if needed
+// Optional: Add warnings for other missing variables if they are critical but maybe recoverable
+// if (!authDomain) console.warn("Firebase Config Warning: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN is missing.");
+// if (!projectId) console.warn("Firebase Config Warning: NEXT_PUBLIC_FIREBASE_PROJECT_ID is missing.");
 
 
 const firebaseConfig = {
-  apiKey: apiKey,
+  apiKey: apiKey || "MISSING_API_KEY", // Provide a fallback to avoid crash IF you didn't throw above
   authDomain: authDomain,
   projectId: projectId,
   storageBucket: storageBucket,
@@ -74,69 +78,74 @@ const firebaseConfig = {
   measurementId: measurementId // Optional, for Analytics
 };
 
-// Initialize Firebase
-let app;
-// Check if Firebase has already been initialized to prevent errors
-if (!getApps().length) {
-  try {
-    app = initializeApp(firebaseConfig);
-    console.log("Firebase App initialized successfully.");
-  } catch (initError: any) {
-    console.error("🔥🔥🔥 Firebase App Initialization Failed:", initError);
-    // Provide specific feedback if it's an invalid config issue during init
-    if (initError.message?.includes('invalid-api-key') || initError.code === 'auth/invalid-api-key') {
-       console.error("🔥🔥🔥 Initialization failed specifically due to invalid API key. Double-check the key value and authorized domains in Firebase Console and .env.local.");
+// Initialize Firebase App (Singleton Pattern)
+function initializeFirebaseApp(): FirebaseApp {
+    if (!getApps().length) {
+        try {
+            const app = initializeApp(firebaseConfig);
+            console.log("Firebase App initialized successfully.");
+            return app;
+        } catch (initError: any) {
+            console.error("🔥🔥🔥 Firebase App Initialization Failed:", initError);
+            // Provide specific feedback if it's an invalid config issue during init
+            if (initError.message?.includes('invalid-api-key') || initError.code === 'auth/invalid-api-key') {
+                console.error("🔥🔥🔥 Initialization failed specifically due to invalid API key. Double-check the key value and authorized domains in Firebase Console and .env.local.");
+            }
+            // Depending on recovery strategy, you might return a dummy app or re-throw
+            throw initError; // Re-throw after logging if initialization is critical
+        }
+    } else {
+        console.log("Firebase App already initialized. Reusing existing instance.");
+        return getApp(); // Get the already initialized app
     }
-    throw initError; // Re-throw after logging
-  }
-} else {
-  app = getApp(); // Get the already initialized app
-  console.log("Firebase App already initialized. Reusing existing instance.");
 }
 
-// Log loaded config keys status *after* potential initialization
-console.log("Firebase Config Status Check (Post-Init):", {
-    apiKeyProvided: !!firebaseConfig.apiKey,
-    authDomainProvided: !!firebaseConfig.authDomain,
-    projectIdProvided: !!firebaseConfig.projectId,
-    storageBucketProvided: !!firebaseConfig.storageBucket,
-    messagingSenderIdProvided: !!firebaseConfig.messagingSenderId,
-    appIdProvided: !!firebaseConfig.appId,
-});
+const app: FirebaseApp = initializeFirebaseApp();
 
-// Initialize other Firebase services safely
-let auth: ReturnType<typeof getAuth>;
-let db: ReturnType<typeof getFirestore>;
-let functions: ReturnType<typeof getFunctions>;
+// Initialize other Firebase services safely, checking for API key presence
+let auth: Auth;
+let db: Firestore;
+let functions: Functions;
 let analytics: any = null; // Initialize analytics as null
 
-try {
-  // These functions usually don't throw if the app object is valid,
-  // but the services might not work correctly if config was bad.
-  auth = getAuth(app);
-  db = getFirestore(app);
-  functions = getFunctions(app);
+// Only initialize services if the API key was present (or handle appropriately)
+if (apiKey) {
+    try {
+        auth = getAuth(app);
+        db = getFirestore(app);
+        functions = getFunctions(app);
+        console.log("Firebase SDKs (Auth, Firestore, Functions) obtained.");
 
-  console.log("Firebase SDKs (Auth, Firestore, Functions) obtained.");
-
-  // Initialize Analytics only on client-side and if supported
-  // if (typeof window !== 'undefined') {
-  //   isSupported().then((supported) => {
-  //     if (supported) {
-  //       analytics = getAnalytics(app);
-  //       console.log("Firebase Analytics initialized.");
-  //     } else {
-  //       console.log("Firebase Analytics is not supported in this environment.");
-  //     }
-  //   });
-  // }
-
-
-} catch (serviceError: any) {
-    console.error("🔥🔥🔥 Error obtaining Firebase service instances:", serviceError);
-    // This block might catch errors if getAuth/getFirestore itself fails,
-    // though usually the initializeApp error is the primary one.
-    throw serviceError;
+        // Initialize Analytics only on client-side and if supported
+        // if (typeof window !== 'undefined') {
+        //   isSupported().then((supported) => {
+        //     if (supported) {
+        //       analytics = getAnalytics(app);
+        //       console.log("Firebase Analytics initialized.");
+        //     } else {
+        //       console.log("Firebase Analytics is not supported in this environment.");
+        //     }
+        //   });
+        // }
+    } catch (serviceError: any) {
+        console.error("🔥🔥🔥 Error obtaining Firebase service instances:", serviceError);
+        // If services fail to initialize even with an app, it might indicate deeper config issues
+        // Ensure the app instance is valid before trying to get services
+        if (!app) {
+             console.error("🔥🔥🔥 Cannot initialize Firebase services because Firebase App failed to initialize.");
+        }
+         // Depending on needs, you might assign null or throw
+         // Assigning null might require checks wherever auth/db/functions are used
+         // auth = null as any; db = null as any; functions = null as any; // Example if allowing app to continue degraded
+         throw serviceError; // Or re-throw if services are essential
+    }
+} else {
+    // Handle the case where API Key was missing and services cannot be initialized
+    console.warn("Firebase services (Auth, Firestore, Functions) NOT initialized due to missing API Key.");
+    // Assign null or dummy objects if the rest of the app needs to handle this possibility
+    auth = null as any; // Requires checking for auth existence before use elsewhere
+    db = null as any;   // Requires checking for db existence before use elsewhere
+    functions = null as any; // Requires checking for functions existence before use elsewhere
 }
 
 
