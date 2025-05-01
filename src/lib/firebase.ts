@@ -1,160 +1,138 @@
 // src/lib/firebase.ts
 import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
-import { getAuth, type Auth } from "firebase/auth";
+// Removed: import { getAuth, type Auth } from "firebase/auth";
 import { getFirestore, type Firestore } from "firebase/firestore";
 import { getFunctions, type Functions } from "firebase/functions";
-// Uncomment if Analytics is needed and configured
-// import { getAnalytics, isSupported } from "firebase/analytics";
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 // !! ========================================================================
-// !! VERY IMPORTANT: READ THIS IF YOU SEE FIREBASE ERRORS
+// !! Environment Variable Configuration Notice
 // !! ========================================================================
-// !! The error "Firebase: Error (auth/invalid-api-key)" or the console message
-// !! "FATAL ERROR: Firebase API Key (NEXT_PUBLIC_FIREBASE_API_KEY) is missing"
-// !! means your Firebase environment variables are not configured correctly.
+// !! This application now uses both Firebase (Firestore) and Supabase.
+// !! Ensure the following variables are correctly set in your `.env.local` file:
 // !!
-// !! TO FIX THIS:
-// !! 1. CREATE/CHECK `.env.local` FILE:
-// !!    - Make sure you have a file named `.env.local` in the *ROOT* directory
-// !!      of your project (the same directory as `package.json`).
+// !! --- Firebase Firestore Configuration ---
+// !! NEXT_PUBLIC_FIREBASE_API_KEY="YOUR_API_KEY"
+// !! NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="YOUR_AUTH_DOMAIN"
+// !! NEXT_PUBLIC_FIREBASE_PROJECT_ID="YOUR_PROJECT_ID"
+// !! NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="YOUR_STORAGE_BUCKET"
+// !! NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="YOUR_MESSAGING_SENDER_ID"
+// !! NEXT_PUBLIC_FIREBASE_APP_ID="YOUR_APP_ID"
 // !!
-// !! 2. ADD FIREBASE CONFIG TO `.env.local`:
-// !!    - Open `.env.local` and add the following lines, replacing the placeholders
-// !!      with your *actual* Firebase project values:
+// !! --- Supabase Configuration ---
+// !! NEXT_PUBLIC_SUPABASE_URL="YOUR_SUPABASE_URL"
+// !! NEXT_PUBLIC_SUPABASE_ANON_KEY="YOUR_SUPABASE_ANON_KEY"
 // !!
-// !!      NEXT_PUBLIC_FIREBASE_API_KEY="YOUR_API_KEY"
-// !!      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="YOUR_AUTH_DOMAIN"
-// !!      NEXT_PUBLIC_FIREBASE_PROJECT_ID="YOUR_PROJECT_ID"
-// !!      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="YOUR_STORAGE_BUCKET"
-// !!      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="YOUR_MESSAGING_SENDER_ID"
-// !!      NEXT_PUBLIC_FIREBASE_APP_ID="YOUR_APP_ID"
-// !!      NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID="YOUR_MEASUREMENT_ID" # Optional
-// !!
-// !!    - You can find these values in your Firebase project settings:
-// !!      Project Settings (⚙️) > General > Your apps > Web app > SDK setup and configuration.
-// !!
-// !! 3. **RESTART YOUR DEVELOPMENT SERVER**:
-// !!    - This is crucial! After saving changes to `.env.local`, STOP your
-// !!      development server (Ctrl+C in the terminal) and RESTART it
-// !!      (`npm run dev` or `yarn dev`). Next.js only reads `.env.local` on startup.
-// !!
-// !! 4. CHECK FIREBASE CONSOLE:
-// !!    - Ensure the API key in `.env.local` matches the one in the Firebase console.
-// !!    - Ensure `localhost` is listed under Authentication > Settings > Authorized domains.
-// !!    - Ensure the correct Firebase project is being used.
+// !! After adding or modifying these variables, **RESTART your development server**
+// !! (Ctrl+C in the terminal, then `npm run dev` or `yarn dev`).
 // !! ========================================================================
 
 
-// --- Pre-check Environment Variables ---
-// Access environment variables safely, ensuring they are read correctly on both server and client.
-const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
-const authDomain = process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
-const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
-const storageBucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
-const messagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
-const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
-const measurementId = process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID; // Optional
+// --- Firebase Configuration ---
+const firebaseApiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+const firebaseAuthDomain = process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
+const firebaseProjectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+const firebaseStorageBucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
+const firebaseMessagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
+const firebaseAppId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
 
-// Debug log to show if the key is being read (logs only during build/server start or client load)
-// console.log(`Firebase Config Check (firebase.ts): NEXT_PUBLIC_FIREBASE_API_KEY found: ${!!apiKey}`);
+// --- Supabase Configuration ---
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 
-// --- Validate Required Variables ---
-if (!apiKey) {
-    // This console.error IS the guidance. If you see this, fix your .env.local
+// --- Validate Required Firebase Variables ---
+if (!firebaseApiKey) {
     console.error("🔥🔥🔥 FATAL ERROR: Firebase API Key (NEXT_PUBLIC_FIREBASE_API_KEY) is missing or undefined.");
     console.error("🔥🔥🔥 Please ensure it is set correctly in your .env.local file and you have restarted the server.");
-    // Throwing an error might be too disruptive depending on where firebase is imported.
-    // Logging the error clearly is often sufficient for developers to fix their env.
-    // Consider throwing ONLY if Firebase absolutely cannot function without it immediately.
-    // throw new Error("Firebase API Key is missing. Check console logs and .env.local.");
+    // Consider throwing an error depending on how critical Firestore is
 }
-// Optional: Add warnings for other missing variables if they are critical but maybe recoverable
-// if (!authDomain) console.warn("Firebase Config Warning: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN is missing.");
-// if (!projectId) console.warn("Firebase Config Warning: NEXT_PUBLIC_FIREBASE_PROJECT_ID is missing.");
-
+// Add similar checks for other required Firebase config if necessary
 
 const firebaseConfig = {
-  apiKey: apiKey || "MISSING_API_KEY", // Provide a fallback to avoid crash IF you didn't throw above
-  authDomain: authDomain,
-  projectId: projectId,
-  storageBucket: storageBucket,
-  messagingSenderId: messagingSenderId,
-  appId: appId,
-  measurementId: measurementId // Optional, for Analytics
+  apiKey: firebaseApiKey || "MISSING_API_KEY", // Fallback only if not throwing
+  authDomain: firebaseAuthDomain,
+  projectId: firebaseProjectId,
+  storageBucket: firebaseStorageBucket,
+  messagingSenderId: firebaseMessagingSenderId,
+  appId: firebaseAppId,
 };
 
-// Initialize Firebase App (Singleton Pattern)
-function initializeFirebaseApp(): FirebaseApp {
+// --- Validate Required Supabase Variables ---
+if (!supabaseUrl) {
+    console.error("🔥🔥🔥 FATAL ERROR: Supabase URL (NEXT_PUBLIC_SUPABASE_URL) is missing or undefined.");
+    console.error("🔥🔥🔥 Please ensure it is set correctly in your .env.local file and you have restarted the server.");
+}
+if (!supabaseAnonKey) {
+    console.error("🔥🔥🔥 FATAL ERROR: Supabase Anon Key (NEXT_PUBLIC_SUPABASE_ANON_KEY) is missing or undefined.");
+    console.error("🔥🔥🔥 Please ensure it is set correctly in your .env.local file and you have restarted the server.");
+}
+
+// Initialize Firebase App (Singleton Pattern) - For Firestore/Functions
+function initializeFirebaseAppIfNeeded(): FirebaseApp {
     if (!getApps().length) {
-        console.log("Attempting to initialize Firebase App...");
+        console.log("Attempting to initialize Firebase App (for Firestore/Functions)...");
         try {
             const app = initializeApp(firebaseConfig);
             console.log("Firebase App initialized successfully.");
             return app;
         } catch (initError: any) {
             console.error("🔥🔥🔥 Firebase App Initialization Failed:", initError);
-            // Provide specific feedback if it's an invalid config issue during init
-            if (initError.message?.includes('invalid-api-key') || initError.code === 'auth/invalid-api-key') {
-                console.error("🔥🔥🔥 Initialization failed specifically due to invalid API key. Double-check the key value in .env.local and ensure the server was restarted.");
-                console.error("🔥🔥🔥 Also verify 'localhost' is an authorized domain in your Firebase Authentication settings and that the correct Firebase project is being used.");
-            }
-            // Depending on recovery strategy, you might return a dummy app or re-throw
-            throw initError; // Re-throw after logging if initialization is critical
+            // Handle specific errors if needed
+            throw initError; // Re-throw if critical
         }
     } else {
-        // console.log("Firebase App already initialized. Reusing existing instance.");
         return getApp(); // Get the already initialized app
     }
 }
 
-let app: FirebaseApp | null = null;
-let auth: Auth | null = null;
-let db: Firestore | null = null;
-let functions: Functions | null = null;
-let analytics: any = null; // Initialize analytics as null
+// Initialize Supabase Client (Singleton Recommended)
+let supabaseSingleton: SupabaseClient | null = null;
 
-
-try {
-  app = initializeFirebaseApp();
-
-  // Initialize other Firebase services safely, checking for app instance
-  if (app) {
-      auth = getAuth(app);
-      db = getFirestore(app);
-      functions = getFunctions(app);
-      console.log("Firebase SDKs (Auth, Firestore, Functions) obtained.");
-
-      // Initialize Analytics only on client-side and if supported
-      // if (typeof window !== 'undefined') {
-      //   isSupported().then((supported) => {
-      //     if (supported) {
-      //       analytics = getAnalytics(app as FirebaseApp); // Cast needed if app can be null initially
-      //       console.log("Firebase Analytics initialized.");
-      //     } else {
-      //       console.log("Firebase Analytics is not supported in this environment.");
-      //     }
-      //   });
-      // }
-  } else {
-      // This case should theoretically not be reached if initializeFirebaseApp throws on critical failure
-      console.error("🔥🔥🔥 Firebase App is null after initialization attempt. Services cannot be obtained.");
-  }
-
-} catch (error) {
-    // This catches errors from initializeFirebaseApp or getAuth/getFirestore/getFunctions
-     console.error("🔥🔥🔥 Critical error during Firebase setup:", error);
-     // Set services to null explicitly if initialization failed
-     app = null;
-     auth = null;
-     db = null;
-     functions = null;
+function getSupabaseClient(): SupabaseClient {
+    if (!supabaseSingleton) {
+        if (!supabaseUrl || !supabaseAnonKey) {
+            // This case should be caught by the initial checks, but adding a safeguard
+             console.error("🔥🔥🔥 Supabase URL or Anon Key is missing during client initialization. Cannot proceed.");
+             // Returning a dummy or throwing might be options, throwing is safer
+             throw new Error("Supabase configuration is incomplete.");
+        }
+        console.log("Attempting to initialize Supabase client...");
+        supabaseSingleton = createClient(supabaseUrl, supabaseAnonKey);
+        console.log("Supabase client initialized successfully.");
+    }
+    return supabaseSingleton;
 }
 
-// Export potentially null services. Consumers must handle the possibility of null.
-// Ensure services are only exported if the app initialization didn't critically fail.
-// Although the individual variables might be null if `getAuth` etc. fail,
-// exporting them allows checks like `if (auth)` in consuming components.
-export { app, auth, db, functions, analytics };
 
-// Reminder comments are covered by the large block at the top
+// --- Initialize and Export Services ---
+let app: FirebaseApp | null = null;
+// Removed: let auth: Auth | null = null;
+let db: Firestore | null = null;
+let functions: Functions | null = null;
+let supabase: SupabaseClient | null = null;
+
+try {
+  // Initialize Firebase for Firestore/Functions
+  app = initializeFirebaseAppIfNeeded();
+  if (app) {
+      db = getFirestore(app);
+      functions = getFunctions(app);
+      console.log("Firebase SDKs (Firestore, Functions) obtained.");
+  } else {
+      console.error("🔥🔥🔥 Firebase App is null after initialization attempt. Firestore/Functions services cannot be obtained.");
+  }
+
+  // Initialize Supabase
+  supabase = getSupabaseClient();
+
+} catch (error) {
+     console.error("🔥🔥🔥 Critical error during Firebase/Supabase setup:", error);
+     app = null;
+     db = null;
+     functions = null;
+     supabase = null; // Ensure Supabase is also null on error
+}
+
+// Export the initialized services. Consumers should check for null.
+export { app, db, functions, supabase };

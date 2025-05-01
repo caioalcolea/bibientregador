@@ -1,5 +1,5 @@
 
-import type { Posicao } from "@/lib/types";
+import type { Posicao, Dispositivo } from "@/lib/types";
 
 /**
  * Represents a position input specifically for the Traccar OsmAnd HTTP protocol.
@@ -14,71 +14,146 @@ export interface TraccarPositionInput {
   accuracy?: number; // Accuracy in meters
   batt?: number; // Battery level (percentage)
   timestamp: number; // Unix timestamp (seconds)
-  // Add other relevant OsmAnd parameters if needed (e.g., hdop, vdop, satellites)
 }
 
 
 // Base URL for Traccar API/OsmAnd endpoint
-// Ensure this points to the server configured to listen for OsmAnd requests.
-// Often it's the main server URL, but could be a specific port like 5055 if not proxied.
-const TRACCAR_ENDPOINT_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // Use environment variable
+const TRACCAR_API_BASE_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // Use environment variable for API base
+const TRACCAR_OSMAND_ENDPOINT_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // OsmAnd might be the same or different
+const TRACCAR_API_CREDENTIALS = process.env.NEXT_PUBLIC_TRACCAR_API_CREDENTIALS; // Format: "username:password"
+
+// Function to safely get Base64 encoded credentials
+const getEncodedCredentials = (): string | null => {
+    if (!TRACCAR_API_CREDENTIALS) {
+        console.error("Traccar API Credentials (NEXT_PUBLIC_TRACCAR_API_CREDENTIALS) are not set in environment variables.");
+        return null;
+    }
+    try {
+        // Check if running in browser or server environment
+        if (typeof window !== 'undefined') {
+            // Browser environment
+            return btoa(TRACCAR_API_CREDENTIALS);
+        } else {
+            // Node.js environment
+            return Buffer.from(TRACCAR_API_CREDENTIALS).toString('base64');
+        }
+    } catch (error) {
+        console.error("Error encoding Traccar credentials:", error);
+        return null;
+    }
+};
 
 /**
  * Sends position data to Traccar using the OsmAnd HTTP protocol format.
- * This is typically a GET request with parameters in the query string.
  * @param position - The position data matching the TraccarPositionInput interface.
  * @returns A promise that resolves to true if the request was likely successful (received 2xx response), false otherwise.
  */
 export async function sendPositionToTraccar(position: TraccarPositionInput): Promise<boolean> {
   const params = new URLSearchParams();
-  params.append('id', position.uniqueId); // Traccar uses 'id' for uniqueId in OsmAnd
+  params.append('id', position.uniqueId);
   params.append('lat', position.latitude.toString());
   params.append('lon', position.longitude.toString());
-  params.append('timestamp', position.timestamp.toString()); // Unix timestamp (seconds)
+  params.append('timestamp', position.timestamp.toString());
 
-  // Append optional parameters if they exist
   if (position.altitude !== undefined) params.append('altitude', position.altitude.toString());
-  if (position.speed !== undefined) params.append('speed', position.speed.toString()); // Knots expected by Traccar
-  if (position.bearing !== undefined) params.append('bearing', position.bearing.toString()); // Also known as course
+  if (position.speed !== undefined) params.append('speed', position.speed.toString());
+  if (position.bearing !== undefined) params.append('bearing', position.bearing.toString());
   if (position.accuracy !== undefined) params.append('accuracy', position.accuracy.toString());
-  if (position.batt !== undefined) params.append('batt', position.batt.toString()); // Battery level
+  if (position.batt !== undefined) params.append('batt', position.batt.toString());
 
-  // Construct the full URL for the GET request
-  // The endpoint might be '/' or '/api/osmand' depending on server config. Using '/' based on previous examples.
-  const url = `${TRACCAR_ENDPOINT_URL}/?${params.toString()}`;
-
-  console.log(`Traccar Send Position URL: ${url}`); // Log the URL for debugging
+  // Use the specific OsmAnd endpoint URL
+  const url = `${TRACCAR_OSMAND_ENDPOINT_URL}/?${params.toString()}`;
+  console.log(`Traccar Send Position URL: ${url}`);
 
   try {
-    // Use GET method as standard for OsmAnd HTTP protocol
-    const response = await fetch(url, {
-      method: 'GET',
-      // 'no-cors' mode might be needed if the Traccar server doesn't send appropriate
-      // CORS headers for this specific endpoint, but it prevents reading the response.
-      // Try without it first. If CORS errors occur, ensure Traccar config allows requests
-      // from your app's origin or consider using 'no-cors' (less ideal).
-      // mode: 'no-cors',
-    });
-
-    // Check if the response status code indicates success (e.g., 200 OK, 202 Accepted)
+    const response = await fetch(url, { method: 'GET' });
     if (response.ok) {
-      // Traccar OsmAnd endpoint usually returns a simple text response or just 200 OK
-      const responseText = await response.text(); // Read response body (optional)
+      const responseText = await response.text();
       console.log(`Traccar Send Position: Success for device ${position.uniqueId}. Response: ${responseText || '<empty>'}`);
       return true;
     } else {
-      // Log detailed error information if the request failed
       const errorText = await response.text();
       console.error(`Traccar Send Position: Failed for device ${position.uniqueId}. Status: ${response.status} ${response.statusText}. Response: ${errorText}`);
       return false;
     }
   } catch (error) {
-    // Handle network errors or other exceptions during the fetch operation
     console.error(`Traccar Send Position: Network or other error for device ${position.uniqueId}:`, error);
     return false;
   }
 }
 
-// Removed getDevices, getPositions, authenticateAdmin as they are not used
-// in the core functionality of sending position updates from the client.
-// These would typically be used in an admin panel or backend service.
+/**
+ * Fetches all devices from the Traccar API.
+ * Requires Basic Authentication credentials set in environment variables.
+ * @returns A promise that resolves to an array of Traccar Devices.
+ * @throws An error if credentials are missing or the API call fails.
+ */
+export async function getTraccarDevices(): Promise<Dispositivo[]> {
+  const encodedCredentials = getEncodedCredentials();
+  if (!encodedCredentials) {
+    throw new Error("Traccar API credentials are missing or invalid.");
+  }
+
+  const url = `${TRACCAR_API_BASE_URL}/api/devices`;
+  console.log(`Traccar Get Devices: Fetching from ${url}`);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Basic ${encodedCredentials}`,
+        'Accept': 'application/json', // Ensure we request JSON
+      }
+    });
+
+    if (response.ok) {
+      const devices: Dispositivo[] = await response.json();
+      console.log(`Traccar Get Devices: Successfully fetched ${devices.length} devices.`);
+      return devices;
+    } else {
+      const errorText = await response.text();
+      console.error(`Traccar Get Devices: Failed. Status: ${response.status} ${response.statusText}. Response: ${errorText}`);
+      throw new Error(`Failed to fetch Traccar devices (Status: ${response.status})`);
+    }
+  } catch (error) {
+    console.error("Traccar Get Devices: Network or other error:", error);
+    throw new Error("Network error while fetching Traccar devices.");
+  }
+}
+
+/**
+ * Verifies Traccar user credentials (used indirectly for driver verification).
+ * Note: This checks the API credentials themselves, not individual driver logins against Traccar.
+ * The provided script uses device name matching, not password verification against Traccar.
+ * @returns A promise that resolves to true if the credentials are valid (API responds successfully), false otherwise.
+ */
+export async function verifyTraccarCredentials(): Promise<boolean> {
+    const encodedCredentials = getEncodedCredentials();
+    if (!encodedCredentials) {
+        return false; // Credentials not set
+    }
+
+    const url = `${TRACCAR_API_BASE_URL}/api/session`; // Endpoint to test credentials
+    console.log(`Traccar Verify Credentials: Testing connection to ${url}`);
+
+    try {
+        const response = await fetch(url, {
+            method: 'GET', // Or POST depending on what /api/session expects for verification
+            headers: {
+                'Authorization': `Basic ${encodedCredentials}`,
+                'Accept': 'application/json',
+            }
+        });
+
+        if (response.ok) {
+            console.log("Traccar Verify Credentials: Credentials are valid.");
+            return true;
+        } else {
+            console.warn(`Traccar Verify Credentials: Invalid credentials or API error. Status: ${response.status}`);
+            return false;
+        }
+    } catch (error) {
+        console.error("Traccar Verify Credentials: Network or other error:", error);
+        return false;
+    }
+}

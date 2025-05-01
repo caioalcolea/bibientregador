@@ -2,23 +2,26 @@
 "use client"; // Essential for hooks and client-side logic
 
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, getDocs, limit, doc, getDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase'; // Import initialized Firebase services
-import type { Empresa, Entregador, AuthUser } from '@/lib/types'; // App-specific types
+// Removed Firebase Auth imports: onAuthStateChanged, signInWithEmailAndPassword, signOut, User as FirebaseUser
+// Removed Firebase Auth/DB imports from @/lib/firebase as they are handled differently now
+import { supabase } from '@/lib/firebase'; // Import Supabase client
+import type { Empresa, Entregador, Dispositivo, AuthUser } from '@/lib/types'; // App-specific types
 import { Loader2 } from 'lucide-react'; // Loading icon
+import { getTraccarDevices, verifyTraccarCredentials } from '@/services/traccar'; // Import Traccar service functions
 
 // Define the shape of the authentication context
 interface AuthContextProps {
   user: AuthUser | null; // The authenticated user's data (or null if not logged in)
   loading: boolean; // Flag indicating if auth state is being determined OR during login/logout
-  initialLoadComplete: boolean; // Flag indicating if the initial auth check has finished
-  login: (companyCode: string, loginIdentifier: string, pass: string) => Promise<void>; // Login function (loginIdentifier can be email or username)
+  initialLoadComplete: boolean; // Flag indicating if the initial auth check (from storage) has finished
+  login: (companyCode: string, loginIdentifier: string, pass: string) => Promise<void>; // Login function
   logout: () => Promise<void>; // Logout function
 }
 
 // Create the context with an initial undefined value
 const AuthContext = createContext<AuthContextProps | undefined>(undefined);
+
+const AUTH_STORAGE_KEY = 'bibitrack_auth_user';
 
 // AuthProvider component: wraps the application to provide auth state
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -26,190 +29,188 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [loading, setLoading] = useState(true); // True during initial check AND login/logout operations
   const [initialLoadComplete, setInitialLoadComplete] = useState(false); // Tracks if the first auth check finished
 
-  // Function to fetch Entregador data based on Firebase User (using UID)
-  const fetchEntregadorData = useCallback(async (firebaseUser: FirebaseUser): Promise<AuthUser | null> => {
-    console.log(`Auth Context: Fetching Entregador data for UID: ${firebaseUser.uid}`);
-    try {
-      // Query 'entregadores' collection using the Firebase UID as the document ID or a specific field
-      // Option 1: Assuming UID is the document ID (Common practice)
-      // const entregadorDocRef = doc(db, "entregadores", firebaseUser.uid);
-      // const entregadorDocSnap = await getDoc(entregadorDocRef);
-      // if (!entregadorDocSnap.exists()) { ... }
-      // const entregadorData = entregadorDocSnap.data() as Omit<Entregador, 'id'>;
-      // const entregadorId = entregadorDocSnap.id;
-
-      // Option 2: Querying by a specific field (e.g., 'login' or 'auth_uid') if UID isn't the doc ID
-      const q = query(
-        collection(db, "entregadores"),
-        where("login", "==", firebaseUser.email), // Query by email used during login
-        // Or: where("auth_uid", "==", firebaseUser.uid), // If you store UID separately
-        limit(1)
-      );
-      const querySnapshot = await getDocs(q);
-
-      if (querySnapshot.empty) {
-        console.warn(`Auth Context: No Entregador document found for UID ${firebaseUser.uid} / email ${firebaseUser.email}.`);
-        return null; // No matching driver found in Firestore
-      }
-
-      // Extract data from the found document
-      const entregadorDoc = querySnapshot.docs[0];
-      const entregadorData = entregadorDoc.data() as Entregador; // Cast directly assuming full Entregador structure
-
-      if (!entregadorData.empresa_codigo || !entregadorData.uniqueId || !entregadorData.nome) {
-          console.error(`Auth Context: Incomplete Entregador data found for UID ${firebaseUser.uid}. Missing required fields.`);
-          return null; // Essential data missing
-      }
-
-      // Construct the AuthUser object combining Firebase Auth info and Firestore data
-      const authUserData: AuthUser = {
-        uid: firebaseUser.uid,
-        email: firebaseUser.email, // Email from Firebase Auth
-        displayName: firebaseUser.displayName || entregadorData.nome, // Use Firestore name if Auth name is null
-        empresaCodigo: entregadorData.empresa_codigo,
-        uniqueId: entregadorData.uniqueId, // Traccar ID
-        entregadorId: entregadorDoc.id, // Firestore document ID
-        nome: entregadorData.nome,
-      };
-      console.log("Auth Context: Entregador data fetched successfully:", authUserData);
-      return authUserData;
-
-    } catch (error) {
-      console.error("Auth Context: Error fetching Entregador data from Firestore:", error);
-      return null; // Return null on error
-    }
-  }, []); // Empty dependency array
-
-  // Effect to listen for Firebase authentication state changes
+  // Effect to load user from storage on initial mount (simulates session persistence)
   useEffect(() => {
-    console.log("Auth Context: Setting up onAuthStateChanged listener.");
-    setLoading(true); // Start loading when the listener is attached
-
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser: FirebaseUser | null) => {
-      console.log("Auth Context: onAuthStateChanged triggered. Firebase user:", firebaseUser?.uid || "null");
-      if (firebaseUser) {
-        // User is signed in according to Firebase Auth
-        const fetchedUser = await fetchEntregadorData(firebaseUser);
-        if (fetchedUser) {
-          // Successfully fetched associated driver data
-          setUser(fetchedUser);
+    console.log("Auth Context: Checking for persisted user session...");
+    setLoading(true);
+    try {
+      const storedUser = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (storedUser) {
+        const parsedUser: AuthUser = JSON.parse(storedUser);
+        // Basic validation (can be more thorough)
+        if (parsedUser && parsedUser.empresaCodigo && parsedUser.loginIdentifier && parsedUser.uniqueId) {
+           console.log("Auth Context: Found valid persisted user session:", parsedUser);
+           setUser(parsedUser);
         } else {
-          // Driver data not found or error fetching - inconsistency state
-          console.error(`Auth Context: User ${firebaseUser.uid} authenticated but failed to fetch Entregador data. Forcing logout.`);
-          setUser(null); // Clear any potentially stale user data
-          await signOut(auth).catch(err => console.error("Auth Context: Error during forced sign out:", err)); // Force sign out
+           console.warn("Auth Context: Invalid user data found in storage. Clearing.");
+           localStorage.removeItem(AUTH_STORAGE_KEY);
+           setUser(null);
         }
       } else {
-        // User is signed out
-        setUser(null);
+         console.log("Auth Context: No persisted user session found.");
+         setUser(null);
       }
-      // Mark initial load as complete and set loading to false AFTER processing
-      // Ensure this runs regardless of whether user is found or not
-      setLoading(false);
-      setInitialLoadComplete(true);
-       console.log("Auth Context: Auth state processed. Loading:", false, "InitialLoadComplete:", true, "User:", user ? user.uid : "null");
-    });
-
-    // Cleanup: Unsubscribe from the listener when the component unmounts
-    return () => {
-        console.log("Auth Context: Cleaning up onAuthStateChanged listener.");
-        unsubscribe();
+    } catch (error) {
+       console.error("Auth Context: Error reading user from storage:", error);
+       localStorage.removeItem(AUTH_STORAGE_KEY); // Clear potentially corrupted data
+       setUser(null);
+    } finally {
+       setLoading(false);
+       setInitialLoadComplete(true);
+       console.log("Auth Context: Initial user check complete.");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchEntregadorData]);
+  }, []); // Runs only once on mount
 
-  // Login function adapted to match the website's logic (Entregador only)
+  // Custom Login function based on the provided script logic
   const login = useCallback(async (companyCode: string, loginIdentifier: string, pass: string) => {
     console.log(`Auth Context: Attempting login for ${loginIdentifier}, company ${companyCode}`);
-    setLoading(true); // Set loading true during login attempt
+    setLoading(true);
+
+    if (!supabase) {
+        console.error("Auth Context: Supabase client not initialized!");
+        setLoading(false);
+        throw new Error("Erro interno do sistema (Supabase não disponível).");
+    }
+
     try {
-      // 1. Verify Company Code exists in Firestore
-      const empresaQuery = query(collection(db, "empresas"), where("codigo", "==", companyCode), limit(1));
-      const empresaSnapshot = await getDocs(empresaQuery);
-      if (empresaSnapshot.empty) {
+      // 1. Fetch Company Data from Supabase
+      console.log(`Auth Context: Fetching company with code: ${companyCode}`);
+      const { data: empresaData, error: empresaError } = await supabase
+        .from('empresas')
+        .select('*')
+        .eq('codigo', companyCode)
+        .limit(1);
+
+      if (empresaError) {
+        console.error("Auth Context: Error fetching company from Supabase:", empresaError);
+        throw new Error("Erro ao verificar código da empresa.");
+      }
+      if (!empresaData || empresaData.length === 0) {
         throw new Error(`Empresa com código '${companyCode}' não encontrada.`);
       }
-      const empresa = empresaSnapshot.docs[0].data() as Empresa;
-      console.log("Auth Context: Company code verified.", empresa.nome);
+      const empresa: Empresa = empresaData[0];
+      console.log("Auth Context: Company found:", empresa.nome);
 
-      // 2. Verify Entregador exists for this company and login identifier
-      // Assuming 'login' field in Firestore stores the identifier (email or username)
-      const entregadorQuery = query(
-        collection(db, "entregadores"),
-        where("empresa_codigo", "==", companyCode),
-        where("login", "==", loginIdentifier),
-        limit(1)
-      );
-      const entregadorSnapshot = await getDocs(entregadorQuery);
-      if (entregadorSnapshot.empty) {
-        // NOTE: The website logic tries Traccar API here. We are assuming
-        // Firebase Auth is the source of truth for credentials.
-        // If Traccar verification is *strictly* needed before Firebase auth,
-        // that logic would go here, but it's unusual.
-        // Sticking to Firebase Auth flow for this implementation.
-        throw new Error(`Login inválido para a empresa '${companyCode}'. Verifique o login.`);
+      // --- Driver Authentication Logic ---
+      // We only care about 'entregador' type based on the mobile app context
+
+      let authenticatedDriver: { uniqueId: string; nome?: string } | null = null;
+
+      // 2a. Check Supabase 'entregadores' field (if exists and has data)
+      if (empresa.entregadores) {
+        console.log("Auth Context: Checking credentials against Supabase 'entregadores' field.");
+        try {
+          let entregadoresList: Array<{ login: string; senha?: string; uniqueId: string; nome?: string }> = [];
+          if (typeof empresa.entregadores === 'string') {
+            entregadoresList = JSON.parse(empresa.entregadores);
+          } else if (Array.isArray(empresa.entregadores)) {
+            entregadoresList = empresa.entregadores;
+          }
+
+          if (Array.isArray(entregadoresList)) {
+            // IMPORTANT SECURITY NOTE: Comparing plain text passwords like this is highly insecure!
+            // This replicates the *insecure* logic from the provided script.
+            // A real application MUST use password hashing on the server-side.
+            const foundDriver = entregadoresList.find(e => e.login === loginIdentifier && e.senha === pass);
+
+            if (foundDriver) {
+              console.log("Auth Context: Driver authenticated via Supabase 'entregadores'.", foundDriver);
+              authenticatedDriver = { uniqueId: foundDriver.uniqueId, nome: foundDriver.nome };
+            } else {
+               console.log("Auth Context: Driver not found or password mismatch in Supabase 'entregadores'.");
+            }
+          } else {
+            console.warn("Auth Context: 'entregadores' field is not a valid JSON array string or array. Skipping Supabase check.");
+          }
+        } catch (parseError) {
+          console.error("Auth Context: Error parsing 'entregadores' field from Supabase:", parseError);
+          // Continue to Traccar check as fallback
+        }
+      } else {
+         console.log("Auth Context: No 'entregadores' field found in Supabase company data. Proceeding to Traccar check.");
       }
-      const entregadorData = entregadorSnapshot.docs[0].data() as Entregador;
-      console.log("Auth Context: Entregador record found:", entregadorData.nome);
 
-      // 3. Attempt Firebase Sign In using the 'login' identifier (assumed to be email for Firebase Auth)
-      // Important: Firebase Auth typically requires email format for signInWithEmailAndPassword.
-      // If 'loginIdentifier' is *not* an email, you need a different auth method
-      // (e.g., custom tokens, or ensure 'loginIdentifier' IS the user's registered email).
-      await signInWithEmailAndPassword(auth, loginIdentifier, pass);
-      console.log("Auth Context: Firebase signIn successful for:", loginIdentifier);
+      // 2b. Fallback: Verify Driver with Traccar API if not found in Supabase
+      if (!authenticatedDriver) {
+        console.log("Auth Context: Attempting fallback authentication via Traccar API.");
+        try {
+           const traccarDevices = await getTraccarDevices(); // Fetch all devices
 
-      // NOTE: Setting user state is handled by the onAuthStateChanged listener.
-      // setLoading will be set to false by the listener.
+           // Filter devices for the current company based on name convention
+           const companyDevices = traccarDevices.filter(device =>
+               device.name && device.name.startsWith(companyCode)
+           );
+           console.log(`Auth Context: Found ${companyDevices.length} Traccar devices for company ${companyCode}.`);
+
+           // Find the device matching the driver's login identifier (case-insensitive)
+           const driverDevice = companyDevices.find(device =>
+               device.name.toLowerCase().includes(loginIdentifier.toLowerCase())
+           );
+
+           if (driverDevice) {
+             console.log("Auth Context: Found matching Traccar device:", driverDevice);
+             // Note: The original script doesn't verify the password against Traccar here.
+             // It assumes if the device name matches, it's valid. This is insecure if
+             // passwords should be checked. For now, replicating the script's behavior.
+             // If password check against Traccar is needed, implement verifyTraccarCredentials here.
+             authenticatedDriver = { uniqueId: driverDevice.uniqueId, nome: driverDevice.name }; // Use device name as fallback name
+             console.log("Auth Context: Driver 'authenticated' via Traccar device name match.");
+           } else {
+             console.log("Auth Context: No matching Traccar device found for login:", loginIdentifier);
+             throw new Error("Credenciais de entregador inválidas ou motorista não encontrado.");
+           }
+        } catch (traccarError: any) {
+           console.error("Auth Context: Error during Traccar verification:", traccarError);
+           throw new Error(traccarError.message || "Erro ao verificar motorista no Traccar.");
+        }
+      }
+
+      // 3. Set User State if Authenticated
+      if (authenticatedDriver) {
+        const authUserData: AuthUser = {
+          empresaCodigo: companyCode,
+          loginIdentifier: loginIdentifier,
+          uniqueId: authenticatedDriver.uniqueId,
+          nome: authenticatedDriver.nome,
+          type: 'entregador',
+        };
+        setUser(authUserData);
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authUserData)); // Persist session
+        console.log("Auth Context: Login successful. User state set:", authUserData);
+      } else {
+        // This case should technically be caught by earlier throws, but as a safeguard:
+        throw new Error("Falha na autenticação. Verifique suas credenciais.");
+      }
 
     } catch (error: any) {
       console.error("Auth Context: Login process failed:", error);
-      // Create user-friendly error messages
-      let friendlyMessage = "Falha no login. Verifique suas credenciais e o código da empresa.";
-      if (error.code) { // Firebase Auth errors
-        switch (error.code) {
-            case 'auth/user-not-found':
-            case 'auth/wrong-password':
-            case 'auth/invalid-credential':
-                friendlyMessage = "Login ou senha inválidos.";
-                break;
-            case 'auth/invalid-email':
-                friendlyMessage = "Formato de login inválido (esperado email)."; // Adjust if login isn't email
-                break;
-            case 'auth/too-many-requests':
-                friendlyMessage = "Muitas tentativas de login. Tente novamente mais tarde.";
-                break;
-             case 'auth/network-request-failed':
-                friendlyMessage = "Erro de rede. Verifique sua conexão.";
-                 break;
-            // Add other specific Firebase error codes as needed
-        }
-      } else if (error.message.includes("Empresa") || error.message.includes("Login inválido")) {
-         // Use custom messages thrown during validation steps
-         friendlyMessage = error.message;
-      }
-      setLoading(false); // Ensure loading is stopped on error
-      throw new Error(friendlyMessage); // Re-throw the processed error message
+      setUser(null); // Ensure user is null on error
+      localStorage.removeItem(AUTH_STORAGE_KEY); // Clear any potentially stale session
+      // Rethrow the error with a user-friendly message if possible
+      throw new Error(error.message || "Ocorreu um erro desconhecido durante o login.");
+    } finally {
+      setLoading(false);
     }
-    // setLoading state will be updated by the onAuthStateChanged listener upon completion
-  }, []);
+  }, []); // Add dependencies if needed, like supabase client instance
 
   // Logout function
   const logout = useCallback(async () => {
     console.log("Auth Context: Attempting logout.");
-    setLoading(true); // Set loading true during logout
+    setLoading(true);
     try {
-      await signOut(auth); // Sign out from Firebase
-      // NOTE: Setting user state to null and loading to false is handled by the onAuthStateChanged listener.
-      console.log("Auth Context: Firebase signOut successful.");
+      setUser(null); // Clear user state
+      localStorage.removeItem(AUTH_STORAGE_KEY); // Remove persisted session
+      // No server-side logout needed for this custom implementation
+      console.log("Auth Context: Logout successful (local state cleared).");
     } catch (error) {
       console.error("Auth Context: Logout failed:", error);
-      setLoading(false); // Ensure loading is stopped even on error in signOut itself
-      throw error; // Re-throw error for calling component to handle
+      // Should generally not fail, but handle just in case
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  // Show loading indicator ONLY during the initial auth check
+  // Show loading indicator ONLY during the initial auth check from storage
   if (loading && !initialLoadComplete) {
      return (
         <div className="flex min-h-screen items-center justify-center bg-secondary" data-testid="initial-auth-loader-container">

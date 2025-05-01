@@ -7,10 +7,10 @@ import { collection, addDoc, serverTimestamp, updateDoc, doc, getDocs, query, wh
 import { sendPositionToTraccar, type TraccarPositionInput } from './traccar'; // Function to push to Traccar API
 
 let trackingInterval: NodeJS.Timeout | null = null;
-let currentUserContext: AuthUser | null = null; // Store the full user context
+let currentAuthUser: AuthUser | null = null; // Store the authenticated user details
 let lastKnownPosition: GeolocationPosition | null = null;
 
-const TRACKING_INTERVAL_MS = 30000; // 30 seconds - Reduced interval for more frequent updates
+const TRACKING_INTERVAL_MS = 30000; // 30 seconds
 const MIN_DISTANCE_UPDATE_METERS = 50; // Only update if moved at least 50 meters
 
 
@@ -49,9 +49,9 @@ const getCurrentLocation = (): Promise<GeolocationPosition> => {
       return;
     }
     navigator.geolocation.getCurrentPosition(resolve, reject, {
-      enableHighAccuracy: true, // Request high accuracy
-      timeout: 15000, // Increased timeout to 15 seconds
-      maximumAge: 0, // Force fresh location data
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 0,
     });
   });
 };
@@ -61,27 +61,32 @@ const getCurrentLocation = (): Promise<GeolocationPosition> => {
 
 /**
  * Updates the driver's current position in relevant 'deliveries' documents in Firestore.
- * Finds 'in_progress' deliveries assigned to the current driver for the correct company.
+ * Finds 'in_progress' deliveries assigned to the current driver's uniqueId for the correct company.
  * @param positionData - The current position data.
  */
 const updatePositionInDeliveries = async (positionData: Omit<Posicao, 'id' | 'serverTime'>) => {
-  if (!currentUserContext || !db) {
-     console.warn("Cannot update deliveries, missing user context or DB connection.");
+  // Use currentAuthUser which holds the logged-in user's details
+  if (!currentAuthUser || !db) {
+     console.warn("Cannot update deliveries, missing auth user context or DB connection.");
      return;
   }
 
-  const { uid: driverId, empresaCodigo } = currentUserContext;
-  const { latitude, longitude, speed, course, altitude, deviceTime } = positionData;
-  console.log(`Location Service: Updating 'in_progress' deliveries for driver ${driverId} in company ${empresaCodigo}`);
+  // Use uniqueId and empresaCodigo from the currentAuthUser
+  const { uniqueId: driverUniqueId, empresaCodigo } = currentAuthUser;
+  const { latitude, longitude, speed, course, altitude, deviceTime, fixTime } = positionData;
+
+  // Use fixTime (GPS fix time) as the timestamp for the position update in deliveries
+  const positionTimestamp = fixTime || deviceTime; // Fallback to deviceTime if fixTime is missing
+
+  console.log(`Location Service: Updating 'in_progress' deliveries for driver uniqueId ${driverUniqueId} in company ${empresaCodigo}`);
 
   try {
-    // Query for 'in_progress' deliveries assigned to this driver and company
+    // Query for 'in_progress' deliveries assigned to this driver's uniqueId and company
     const deliveriesQuery = query(
-      collection(db, "deliveries"),
+      collection(db, "deliveries"), // Assuming 'deliveries' is the correct collection name
       where("empresa_codigo", "==", empresaCodigo),
-      where("driver_id", "==", driverId),
+      where("driver_id", "==", driverUniqueId), // Query using Traccar uniqueId stored in driver_id
       where("status", "==", "in_progress")
-      // No limit, update all active deliveries for the driver
     );
 
     const querySnapshot = await getDocs(deliveriesQuery);
@@ -91,7 +96,6 @@ const updatePositionInDeliveries = async (positionData: Omit<Posicao, 'id' | 'se
       return;
     }
 
-    // Use a batch write for efficiency if updating multiple documents
     const batch = writeBatch(db);
     let updateCount = 0;
 
@@ -99,20 +103,24 @@ const updatePositionInDeliveries = async (positionData: Omit<Posicao, 'id' | 'se
        const deliveryRef = doc(db, "deliveries", docSnap.id);
        const deliveryData = docSnap.data() as Entrega;
 
-       // Prepare the update payload matching the target schema
+       // Prepare the update payload matching the Firestore 'deliveries' schema
        const updatePayload: Partial<Entrega> = {
          posicao_atual_lat: latitude,
          posicao_atual_lon: longitude,
-         speed: speed ?? null, // Use null if undefined
-         course: course?.toString() ?? null, // Convert course to string or null
-         altitude: altitude ?? null,
-         timestamp: deviceTime, // Use device time for the position timestamp
+         // Include other relevant fields from Posicao if needed in Entrega schema
+         speed: speed ?? undefined, // Use undefined if null/absent
+         course: course?.toString() ?? undefined,
+         altitude: altitude ?? undefined,
+         timestamp: positionTimestamp as FirebaseTimestamp, // Add the position timestamp
          updated_at: serverTimestamp() as FirebaseTimestamp, // Update the general updated_at timestamp
        };
 
+
        // Calculate distance to destination if lat/lon are available
-       if (deliveryData.lat && deliveryData.lon) {
+       if (deliveryData.lat && deliveryData.lon && latitude && longitude) {
           updatePayload.distancia_destino = calculateDistance(latitude, longitude, deliveryData.lat, deliveryData.lon);
+       } else {
+          updatePayload.distancia_destino = undefined; // Explicitly set to undefined if calculation isn't possible
        }
 
        batch.update(deliveryRef, updatePayload);
@@ -136,14 +144,27 @@ const updatePositionInDeliveries = async (positionData: Omit<Posicao, 'id' | 'se
  * @param position - The raw GeolocationPosition object.
  */
 const syncPositionWithTraccar = async (position: GeolocationPosition) => {
-    if (!currentUserContext) {
-        console.warn("Traccar Sync: Missing user context.");
+    // Use currentAuthUser for uniqueId
+    if (!currentAuthUser) {
+        console.warn("Traccar Sync: Missing authenticated user context.");
         return;
     }
 
-    const { uniqueId } = currentUserContext; // Traccar device uniqueId
+    const { uniqueId } = currentAuthUser; // Get uniqueId from the authenticated user
     const { latitude, longitude, altitude, speed, heading, accuracy } = position.coords;
     const timestamp = Math.floor(position.timestamp / 1000); // Unix timestamp in seconds
+
+    let batteryLevel: number | undefined = undefined;
+    // Try getting battery level (only works in secure contexts and might not be supported)
+    if (typeof navigator.getBattery === 'function') {
+       try {
+           const battery = await navigator.getBattery();
+           batteryLevel = Math.round(battery.level * 100);
+       } catch (batteryError) {
+           console.warn("Traccar Sync: Could not get battery level:", batteryError);
+       }
+    }
+
 
     const traccarPayload: TraccarPositionInput = {
         uniqueId: uniqueId,
@@ -154,7 +175,7 @@ const syncPositionWithTraccar = async (position: GeolocationPosition) => {
         speed: speed ? speed * 1.94384 : undefined, // Convert m/s to knots
         bearing: heading ?? undefined,
         accuracy: accuracy ?? undefined,
-        // batt: await navigator.getBattery?.().then(b => b.level * 100).catch(() => undefined), // Optional battery
+        batt: batteryLevel, // Include battery level if available
     };
 
     console.log("Traccar Sync: Sending position:", traccarPayload);
@@ -162,10 +183,8 @@ const syncPositionWithTraccar = async (position: GeolocationPosition) => {
         const success = await sendPositionToTraccar(traccarPayload);
         if (success) {
             console.log("Traccar Sync: Position sent successfully.");
-            // Optionally update a 'lastSyncedToTraccar' field in Firestore if needed
         } else {
             console.warn("Traccar Sync: Failed to send position.");
-            // Handle failure (e.g., retry logic, though complex for web)
         }
     } catch (error) {
         console.error("Traccar Sync: Error sending position:", error);
@@ -178,8 +197,9 @@ const syncPositionWithTraccar = async (position: GeolocationPosition) => {
  * The core tracking function, executed periodically.
  */
 const trackLocation = async () => {
-  if (!currentUserContext) {
-    console.warn("Tracking stopped: Missing user context.");
+  // Use currentAuthUser
+  if (!currentAuthUser) {
+    console.warn("Tracking stopped: Missing authenticated user context.");
     stopLocationService();
     return;
   }
@@ -191,9 +211,8 @@ const trackLocation = async () => {
     const currentLat = position.coords.latitude;
     const currentLon = position.coords.longitude;
 
-    console.log(`Location Service: Location acquired: ${currentLat}, ${currentLon} (Accuracy: ${position.coords.accuracy}m)`);
+    console.log(`Location Service: Location acquired: ${currentLat}, ${currentLon} (Accuracy: ${position.coords.accuracy}m) at ${now.toISOString()}`);
 
-    // Check if the user has moved significantly since the last update
     let shouldUpdate = true;
     if (lastKnownPosition) {
         const distanceMoved = calculateDistance(
@@ -211,27 +230,26 @@ const trackLocation = async () => {
 
     if (shouldUpdate) {
         console.log("Location Service: Significant movement detected or first update, proceeding.");
-        lastKnownPosition = position; // Update last known position
+        lastKnownPosition = position;
 
+        // Use currentAuthUser for context
         const positionData: Omit<Posicao, 'id' | 'serverTime'> = {
-            uniqueId: currentUserContext.uniqueId, // Use uniqueId from context
-            deviceId: currentUserContext.uniqueId, // Often uniqueId is also used as deviceId, adjust if different
+            uniqueId: currentAuthUser.uniqueId,
+            // Assuming deviceId in Posicao can be the same as uniqueId for simplicity, adjust if needed
+            deviceId: currentAuthUser.uniqueId,
             latitude: currentLat,
             longitude: currentLon,
             altitude: position.coords.altitude ?? undefined,
-            speed: position.coords.speed ? position.coords.speed * 1.94384 : undefined, // m/s to knots
+            speed: position.coords.speed ? position.coords.speed * 1.94384 : undefined,
             course: position.coords.heading ?? undefined,
             accuracy: position.coords.accuracy ?? undefined,
             attributes: {
-                // battery: await navigator.getBattery?.().then(b => b.level * 100).catch(() => undefined), // Example battery
                 source: 'web-app',
-                timestampAccuracy: position.timestamp, // Include original timestamp for reference
+                timestampAccuracy: position.timestamp,
             },
-             // Use Firebase Timestamp for Firestore compatibility
             deviceTime: Timestamp.fromDate(now),
             fixTime: Timestamp.fromDate(new Date(position.timestamp)),
-            empresa_codigo: currentUserContext.empresaCodigo,
-            // protocol: 'web', // Indicate source if needed
+            empresa_codigo: currentAuthUser.empresaCodigo,
         };
 
         // Update Firestore 'deliveries' table
@@ -244,11 +262,9 @@ const trackLocation = async () => {
 
   } catch (error: any) {
     console.error("Location Service: Error getting or processing location:", error.message);
-    // Handle specific errors, e.g., geolocation permission denied
     if (error.code === error.PERMISSION_DENIED) {
       console.error("Location Service: Geolocation permission denied by user.");
-      stopLocationService(); // Stop the service if permission is denied
-      // Consider notifying the user via toast or UI update
+      stopLocationService();
     }
   }
 };
@@ -258,7 +274,7 @@ const trackLocation = async () => {
 
 /**
  * Starts the location tracking service simulation.
- * @param user - The authenticated user object containing necessary IDs.
+ * @param user - The authenticated user object (AuthUser).
  */
 export const startLocationService = (user: AuthUser) => {
   if (trackingInterval) {
@@ -269,21 +285,23 @@ export const startLocationService = (user: AuthUser) => {
       console.warn("Location Service: Geolocation not available. Cannot start service.");
       return;
   }
+  if (!user || !user.uniqueId || !user.empresaCodigo) {
+      console.error("Location Service: Cannot start without valid user context (uniqueId, empresaCodigo).");
+      return;
+  }
 
-  console.log(`Location Service: Starting for user ${user.uid}, Traccar ID ${user.uniqueId}, company ${user.empresaCodigo}`);
-  currentUserContext = user;
-  lastKnownPosition = null; // Reset last known position on start
+  console.log(`Location Service: Starting for user ${user.loginIdentifier}, Traccar ID ${user.uniqueId}, company ${user.empresaCodigo}`);
+  currentAuthUser = user; // Store the authenticated user details
+  lastKnownPosition = null;
 
-  // Request permission and run immediately first time
   navigator.permissions?.query({ name: 'geolocation' }).then((permissionStatus) => {
     if (permissionStatus.state === 'granted' || permissionStatus.state === 'prompt') {
-        trackLocation(); // Run immediately
-        // Then run on interval
+        trackLocation();
         trackingInterval = setInterval(trackLocation, TRACKING_INTERVAL_MS);
     } else {
         console.error("Location Service: Geolocation permission denied. Service not started.");
-         stopLocationService(); // Ensure it's stopped
-        // Maybe show a toast asking the user to enable permissions
+         stopLocationService();
+         // Consider showing a toast to the user
     }
      permissionStatus.onchange = () => {
         if (permissionStatus.state !== 'granted') {
@@ -293,7 +311,7 @@ export const startLocationService = (user: AuthUser) => {
      }
   }).catch(err => {
      console.error("Location Service: Error checking geolocation permission:", err);
-     // Fallback for browsers not supporting permissions query - try starting anyway
+     // Fallback: Try starting anyway, browser might prompt
      trackLocation();
      trackingInterval = setInterval(trackLocation, TRACKING_INTERVAL_MS);
   });
@@ -308,12 +326,12 @@ export const stopLocationService = () => {
     clearInterval(trackingInterval);
     trackingInterval = null;
   }
-  currentUserContext = null; // Clear user context
-  lastKnownPosition = null; // Clear last known position
+  currentAuthUser = null; // Clear user context
+  lastKnownPosition = null;
 };
 
 /**
- * Checks if the service is currently running (has an active interval).
+ * Checks if the service is currently running.
  * @returns True if the service interval is set, false otherwise.
  */
 export const isLocationServiceRunning = (): boolean => {

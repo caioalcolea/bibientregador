@@ -3,45 +3,56 @@ import type { Timestamp } from "firebase/firestore";
 export interface FirebaseTimestamp extends Timestamp {}
 
 export interface Empresa {
-  id: string; // Firestore document ID
+  id: string; // Firestore document ID or Supabase ID
   codigo: string; // Unique code for the company
   nome: string;
   config?: Record<string, any>; // Using Record for Map<String, dynamic>
-  created_at?: FirebaseTimestamp;
-  api_key?: string; // Potentially sensitive, consider security implications
-  admin_login?: string; // Potentially sensitive
-  admin_senha?: string; // Potentially sensitive (Should be hashed if stored)
+  created_at?: FirebaseTimestamp | string; // Allow string for Supabase timestamps
+  api_key?: string;
+  admin_login?: string;
+  admin_senha?: string; // Should be hashed if stored and verified securely
+  // Added from script logic analysis - potentially holds driver credentials if used
+  entregadores?: string | Array<{ login: string; senha?: string; uniqueId: string; nome?: string }>; // Can be JSON string or array
 }
 
 export interface Entregador {
-  id?: string; // Firestore document ID (optional if using UID as ID)
+  id?: string; // Firestore/Supabase document ID
   empresa_codigo: string;
-  login: string; // Email used for Firebase Auth
-  // 'senha' is managed by Firebase Auth, not stored here
+  login: string; // Login identifier (username or email)
+  senha?: string; // Password (SHOULD NOT be stored/retrieved insecurely)
   nome: string;
   uniqueId: string; // Traccar uniqueId for device association
-  status: 'online' | 'offline' | 'inativo'; // Example statuses
-  fcmToken?: string; // For push notifications via Firebase Cloud Messaging
-  last_seen?: FirebaseTimestamp;
-  // Add any other relevant driver information
+  status?: 'online' | 'offline' | 'inativo'; // Example statuses
+  fcmToken?: string;
+  last_seen?: FirebaseTimestamp | string;
+  // Potentially Firebase Auth UID if hybrid approach was used, but removing based on request
+  // auth_uid?: string;
 }
 
 export interface Dispositivo {
-  id: string; // Traccar device ID
-  name: string; // Typically includes company code and driver name/identifier
-  uniqueId: string; // Traccar unique ID (often the IMEI or a custom ID)
-  status?: 'online' | 'offline' | 'unknown'; // Traccar status
-  lastUpdate?: FirebaseTimestamp; // Traccar last update time (or Firestore timestamp)
-  phone?: string; // Device phone number
-  model?: string; // Device model
-  contact?: string; // Driver contact info (can be redundant with Entregador)
-  empresa_codigo: string; // Link to Empresa
+  id: number; // Traccar device ID is usually a number
+  name: string;
+  uniqueId: string;
+  status?: 'online' | 'offline' | 'unknown';
+  lastUpdate?: string; // Traccar timestamps are usually ISO strings
+  phone?: string;
+  model?: string;
+  contact?: string;
+  empresa_codigo?: string; // Added for linking, might not exist directly in Traccar API response
+  // Other Traccar fields might be present
+  attributes?: Record<string, any>;
+  positionId?: number;
+  groupId?: number;
+  geofenceIds?: number[];
+  disabled?: boolean;
+  // Add other fields from Traccar API as needed
 }
+
 
 // Represents a position record, primarily for storing in Firestore
 export interface Posicao {
   id?: string; // Firestore document ID (optional)
-  deviceId: string; // Traccar device ID (corresponds to Dispositivo.id)
+  deviceId: number | string; // Traccar device ID (can be number or string depending on source)
   uniqueId: string; // Traccar unique ID (corresponds to Dispositivo.uniqueId)
   protocol?: string; // Protocol used (e.g., osmand, gps103)
   serverTime?: FirebaseTimestamp; // Time received by server (Firebase)
@@ -70,16 +81,16 @@ export interface Entrega {
   cidade?: string; // City
   estado?: string; // State
   status: 'pending' | 'in_progress' | 'completed' | 'canceled' | 'failed'; // Delivery status
-  driver_id?: string; // Entregador ID (Firebase Auth UID) assigned
+  driver_id?: string; // Entregador uniqueId (Traccar) or login identifier
   empresa_codigo: string; // Link to Empresa
   tracking_code?: string; // Unique tracking code for the delivery
   phone?: string; // Customer phone number
   lat?: number; // Destination latitude
   lon?: number; // Destination longitude
-  created_at?: FirebaseTimestamp; // When the delivery was created
-  updated_at?: FirebaseTimestamp; // Last status update time
-  scheduled_time?: FirebaseTimestamp; // Optional scheduled delivery time
-  completion_time?: FirebaseTimestamp; // Time the delivery was completed/failed
+  created_at?: FirebaseTimestamp | string; // When the delivery was created
+  updated_at?: FirebaseTimestamp | string; // Last status update time
+  scheduled_time?: FirebaseTimestamp | string; // Optional scheduled delivery time
+  completion_time?: FirebaseTimestamp | string; // Time the delivery was completed/failed
   notes?: string; // General notes about the delivery
   observacoes?: string; // Specific observations entered by driver on completion/failure
   motivo_falha?: string; // Reason if status is 'failed' or 'canceled'
@@ -96,13 +107,12 @@ export interface Entrega {
   entrega_concluida_notificada?: boolean; // Flag for completion notification
 }
 
-// Represents the combined data for an authenticated user
+// Represents the authenticated user based on the custom logic
 export interface AuthUser {
-  uid: string; // Firebase Auth User ID
-  email: string | null; // User's email from Firebase Auth
-  displayName: string | null; // User's display name (can be from Auth or Firestore)
-  empresaCodigo: string; // Company code from Firestore 'entregadores'
-  uniqueId: string; // Traccar uniqueId from Firestore 'entregadores'
-  entregadorId: string; // Firestore document ID for the 'entregadores' record
-  nome: string; // Driver's full name from Firestore 'entregadores'
+  empresaCodigo: string; // Company code used for login
+  loginIdentifier: string; // The username/email used to log in
+  uniqueId: string; // Traccar uniqueId associated with the driver
+  nome?: string; // Driver's name (if available from Supabase/Traccar)
+  type: 'entregador'; // Since we only support entregador now
+  // Removed Firebase specific fields: uid, email, displayName, entregadorId
 }
