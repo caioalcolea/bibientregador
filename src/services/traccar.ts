@@ -1,170 +1,84 @@
+
 import type { Posicao } from "@/lib/types";
 
 /**
- * Represents a device.
- */
-export interface Device {
-  /**
-   * The ID of the device.
-   */
-  id: string;
-  /**
-   * The name of the device.
-   */
-  name: string;
-  /**
-   * The unique ID of the device.
-   */
-  uniqueId: string;
-}
-
-/**
- * Represents a position (input for Traccar OsmAnd format).
- * This might differ slightly from the Firebase Posicao model.
+ * Represents a position input specifically for the Traccar OsmAnd HTTP protocol.
  */
 export interface TraccarPositionInput {
-  uniqueId: string; // Traccar unique ID
+  uniqueId: string; // Traccar unique ID (usually IMEI or configured ID)
   latitude: number;
   longitude: number;
-  altitude?: number;
+  altitude?: number; // In meters
   speed?: number; // Speed in knots
-  bearing?: number; // Course/Heading
-  accuracy?: number;
+  bearing?: number; // Course/Heading in degrees
+  accuracy?: number; // Accuracy in meters
   batt?: number; // Battery level (percentage)
   timestamp: number; // Unix timestamp (seconds)
-  // Add other relevant OsmAnd parameters if needed
+  // Add other relevant OsmAnd parameters if needed (e.g., hdop, vdop, satellites)
 }
 
 
-// Base URL for Traccar API
-const TRACCAR_API_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // Use environment variable
-
-// TODO: Securely manage Traccar admin credentials or use per-device tokens if possible.
-// Avoid hardcoding credentials. Authentication might be needed for device management,
-// but sending positions often uses a simpler URL-based method (OsmAnd protocol).
-// const TRACCAR_ADMIN_USER = process.env.TRACCAR_ADMIN_USER;
-// const TRACCAR_ADMIN_PASSWORD = process.env.TRACCAR_ADMIN_PASSWORD;
-
-
-/**
- * Asynchronously retrieves devices from Traccar.
- * Requires Authentication.
- * @returns A promise that resolves to an array of Device objects.
- */
-export async function getDevices(): Promise<Device[]> {
-  console.warn("Traccar getDevices: Not implemented. Requires authenticated API call.");
-  // TODO: Implement authenticated call to /api/devices
-  // Example structure:
-  // const authenticatedFetch = /* ... get authenticated fetch instance ... */;
-  // const response = await authenticatedFetch(`${TRACCAR_API_URL}/api/devices`);
-  // if (!response.ok) throw new Error('Failed to fetch devices');
-  // return await response.json();
-
-  // Placeholder data:
-  return [
-    {
-      id: '1', // Traccar's internal ID
-      name: 'Device 1 Simulated',
-      uniqueId: 'simulated_id_123', // The ID used for sending positions
-    },
-     {
-      id: '2',
-      name: 'Device 2 Simulated',
-      uniqueId: 'simulated_id_456',
-    },
-  ];
-}
-
-/**
- * Asynchronously retrieves positions from Traccar.
- * Requires Authentication.
- * @returns A promise that resolves to an array of Position objects (Traccar's format).
- */
-export async function getPositions(deviceId?: string): Promise<any[]> {
-   console.warn("Traccar getPositions: Not implemented. Requires authenticated API call.");
-  // TODO: Implement authenticated call to /api/positions (potentially filtered by deviceId, dates)
-  // Example structure:
-  // const authenticatedFetch = /* ... get authenticated fetch instance ... */;
-  // const url = deviceId ? `${TRACCAR_API_URL}/api/positions?deviceId=${deviceId}` : `${TRACCAR_API_URL}/api/positions`;
-  // const response = await authenticatedFetch(url);
-  // if (!response.ok) throw new Error('Failed to fetch positions');
-  // return await response.json();
-
-  // Placeholder data:
-  return [
-    {
-      id: 101, // Traccar's internal position ID
-      deviceId: 1, // Matches Traccar device ID
-      latitude: -23.5505,
-      longitude: -46.6333,
-      altitude: 760,
-      speed: 10, // knots
-      course: 90,
-      deviceTime: "2023-10-27T10:00:00Z",
-      fixTime: "2023-10-27T10:00:00Z",
-      serverTime: "2023-10-27T10:00:05Z",
-      attributes: { batteryLevel: 85, accuracy: 15 },
-    },
-  ];
-}
-
-/**
- * Authenticates with the Traccar API using admin credentials.
- * IMPORTANT: This should ideally be done server-side (e.g., in a Cloud Function)
- * and not directly in the client-side code due to security risks.
- * @returns A promise that resolves to true if authentication is successful.
- */
-export async function authenticateAdmin(): Promise<boolean> {
-  console.warn("Traccar authenticateAdmin: Not implemented securely for client-side. Use server-side authentication.");
-  // TODO: Implement server-side authentication if needed for management tasks.
-  // For client-side position sending via OsmAnd, this might not be required.
-  return true; // Placeholder
-}
-
+// Base URL for Traccar API/OsmAnd endpoint
+// Ensure this points to the server configured to listen for OsmAnd requests.
+// Often it's the main server URL, but could be a specific port like 5055 if not proxied.
+const TRACCAR_ENDPOINT_URL = process.env.NEXT_PUBLIC_TRACCAR_API_URL || "https://track.talkhub.me"; // Use environment variable
 
 /**
  * Sends position data to Traccar using the OsmAnd HTTP protocol format.
- * This usually doesn't require complex session authentication.
+ * This is typically a GET request with parameters in the query string.
  * @param position - The position data matching the TraccarPositionInput interface.
+ * @returns A promise that resolves to true if the request was likely successful (received 2xx response), false otherwise.
  */
 export async function sendPositionToTraccar(position: TraccarPositionInput): Promise<boolean> {
   const params = new URLSearchParams();
-  params.append('id', position.uniqueId);
+  params.append('id', position.uniqueId); // Traccar uses 'id' for uniqueId in OsmAnd
   params.append('lat', position.latitude.toString());
   params.append('lon', position.longitude.toString());
-  params.append('timestamp', position.timestamp.toString());
+  params.append('timestamp', position.timestamp.toString()); // Unix timestamp (seconds)
 
+  // Append optional parameters if they exist
   if (position.altitude !== undefined) params.append('altitude', position.altitude.toString());
-  if (position.speed !== undefined) params.append('speed', position.speed.toString()); // Knots
-  if (position.bearing !== undefined) params.append('bearing', position.bearing.toString());
+  if (position.speed !== undefined) params.append('speed', position.speed.toString()); // Knots expected by Traccar
+  if (position.bearing !== undefined) params.append('bearing', position.bearing.toString()); // Also known as course
   if (position.accuracy !== undefined) params.append('accuracy', position.accuracy.toString());
-  if (position.batt !== undefined) params.append('batt', position.batt.toString());
+  if (position.batt !== undefined) params.append('batt', position.batt.toString()); // Battery level
 
-  // Construct the URL (Traccar typically listens on port 5055 for OsmAnd by default, but depends on config)
-  // The prompt specified sending to /api/?... which implies the main web server port (80/443)
-  // is configured to proxy/handle OsmAnd requests. Double-check Traccar setup.
-  const url = `${TRACCAR_API_URL}/?${params.toString()}`; // Using base URL + OsmAnd query params
+  // Construct the full URL for the GET request
+  // The endpoint might be '/' or '/api/osmand' depending on server config. Using '/' based on previous examples.
+  const url = `${TRACCAR_ENDPOINT_URL}/?${params.toString()}`;
 
   console.log(`Traccar Send Position URL: ${url}`); // Log the URL for debugging
 
   try {
-    // We use GET for OsmAnd protocol as specified by Traccar docs
+    // Use GET method as standard for OsmAnd HTTP protocol
     const response = await fetch(url, {
-      method: 'GET', // Or POST depending on Traccar config, GET is common for OsmAnd URL format
-      // mode: 'no-cors' // Might be needed if Traccar server doesn't send CORS headers for this endpoint
+      method: 'GET',
+      // 'no-cors' mode might be needed if the Traccar server doesn't send appropriate
+      // CORS headers for this specific endpoint, but it prevents reading the response.
+      // Try without it first. If CORS errors occur, ensure Traccar config allows requests
+      // from your app's origin or consider using 'no-cors' (less ideal).
+      // mode: 'no-cors',
     });
 
-    // Traccar OsmAnd endpoint usually returns 200 OK with simple text body on success
+    // Check if the response status code indicates success (e.g., 200 OK, 202 Accepted)
     if (response.ok) {
-      console.log(`Traccar Send Position: Success for device ${position.uniqueId}`);
-      // Consider checking response text if needed, e.g., await response.text();
+      // Traccar OsmAnd endpoint usually returns a simple text response or just 200 OK
+      const responseText = await response.text(); // Read response body (optional)
+      console.log(`Traccar Send Position: Success for device ${position.uniqueId}. Response: ${responseText || '<empty>'}`);
       return true;
     } else {
-      console.error(`Traccar Send Position: Failed for device ${position.uniqueId}. Status: ${response.status}, Text: ${await response.text()}`);
+      // Log detailed error information if the request failed
+      const errorText = await response.text();
+      console.error(`Traccar Send Position: Failed for device ${position.uniqueId}. Status: ${response.status} ${response.statusText}. Response: ${errorText}`);
       return false;
     }
   } catch (error) {
+    // Handle network errors or other exceptions during the fetch operation
     console.error(`Traccar Send Position: Network or other error for device ${position.uniqueId}:`, error);
     return false;
   }
 }
+
+// Removed getDevices, getPositions, authenticateAdmin as they are not used
+// in the core functionality of sending position updates from the client.
+// These would typically be used in an admin panel or backend service.

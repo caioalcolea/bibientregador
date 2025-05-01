@@ -1,3 +1,4 @@
+
 "use client";
 
 import * as React from "react";
@@ -17,84 +18,86 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2, Building, User, KeyRound } from "lucide-react";
-// import { signInWithEmailAndPassword } from "firebase/auth"; // Uncomment when Firebase is configured
-// import { auth } from "@/lib/firebase"; // Uncomment when Firebase is configured
-// import { useRouter } from 'next/navigation'; // Uncomment when auth logic is added
+import { useAuth } from '@/context/AuthContext'; // Import useAuth hook
+import { useRouter } from 'next/navigation'; // Import useRouter for redirection
 
-// Define the validation schema using Zod
+// Define the validation schema using Zod, matching the fields in the provided HTML
 const loginSchema = z.object({
-  companyCode: z.string().min(1, "Company code is required"),
-  username: z.string().email("Invalid email address"),
-  password: z.string().min(6, "Password must be at least 6 characters"),
+  companyCode: z.string().min(1, "Código da Empresa é obrigatório"),
+  // Username/Login field can be email or other identifier based on context, using string for flexibility
+  username: z.string().min(1, "Login é obrigatório"),
+  password: z.string().min(1, "Senha é obrigatória"), // Assuming min length 1 as per HTML example
 });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
 export default function LoginPage() {
-  const [isLoading, setIsLoading] = React.useState(false);
+  // Use the loading state and login function from AuthContext
+  const { login, loading: authLoading, user } = useAuth();
   const { toast } = useToast();
-  // const router = useRouter(); // Uncomment when auth logic is added
+  const router = useRouter();
+
+  // Local loading state for the submit button specifically
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
       companyCode: "",
-      username: "",
+      username: "", // Renamed from email to username for consistency with HTML
       password: "",
     },
   });
 
+   // Redirect if user is already logged in
+   React.useEffect(() => {
+    if (user) {
+      router.replace('/dashboard');
+    }
+   }, [user, router]);
+
   const onSubmit = async (data: LoginFormValues) => {
-    setIsLoading(true);
+    setIsSubmitting(true); // Start local submitting indicator
     console.log("Login data submitted:", data);
 
-    // TODO: Implement Firebase Authentication
-    // 1. Query Firestore 'empresas' collection by data.companyCode.
-    // 2. Query Firestore 'entregadores' collection by data.username and empresa_codigo.
-    // 3. If both exist and match, attempt Firebase sign-in.
-    // 4. On successful sign-in, redirect to the dashboard/main app view.
-    // 5. Handle errors (invalid company code, invalid credentials, etc.).
-
     try {
-      // Placeholder for Firebase Auth - replace with actual implementation
-      // const userCredential = await signInWithEmailAndPassword(auth, data.username, data.password);
-      // console.log("Firebase Auth Success:", userCredential.user);
+      // Call the login function from AuthContext
+      await login(data.companyCode, data.username, data.password);
 
-      // Simulate API call/Auth
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
+      // Login function handles Firebase auth and Firestore checks.
+      // If it resolves without error, the onAuthStateChanged listener in AuthContext
+      // will update the user state and trigger redirection via the useEffect above.
       toast({
-        title: "Login Successful",
-        description: `Welcome back, ${data.username}! (Simulation)`,
+        title: "Login Iniciado",
+        description: "Verificando credenciais...", // More accurate message
       });
-      // router.push('/dashboard'); // Redirect on successful login - Uncomment later
+      // No need to redirect here, useEffect handles it based on user state change
+      // router.push('/dashboard');
 
     } catch (error: any) {
-      console.error("Login failed:", error);
-      let errorMessage = "Login failed. Please check your credentials.";
-      // if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password') {
-      //   errorMessage = "Invalid username or password.";
-      // } else if (error.code === 'auth/invalid-email') {
-      //    errorMessage = "Invalid email format.";
-      // }
-       // Add checks for company code / entregador not found based on Firestore query results
-
+      console.error("Login process failed:", error);
       toast({
         variant: "destructive",
-        title: "Login Failed",
-        description: errorMessage,
+        title: "Falha no Login",
+        description: error.message || "Ocorreu um erro. Verifique suas credenciais e tente novamente.",
       });
     } finally {
-      setIsLoading(false);
+      setIsSubmitting(false); // Stop local submitting indicator
+      // AuthContext's loading state will be managed internally by the login/auth process
     }
   };
+
+  // Disable form while auth check is in progress or during submission
+  const isLoading = authLoading || isSubmitting;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-secondary p-4">
       <Card className="w-full max-w-md shadow-lg">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl font-bold text-primary">BIBI.track Mobile</CardTitle>
-          <CardDescription>Entregador Login</CardDescription>
+          {/* Optional: Add logo image here if desired */}
+          {/* <img src="/path/to/logo.png" alt="BIBI track" className="mx-auto mb-4 h-10 w-auto" /> */}
+          <CardTitle className="text-2xl font-bold text-primary">BIBI.track</CardTitle>
+          <CardDescription>Acesso Entregador</CardDescription>
         </CardHeader>
         <CardContent>
           <Form {...form}>
@@ -104,9 +107,9 @@ export default function LoginPage() {
                 name="companyCode"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="flex items-center gap-2"><Building size={16} /> Company Code</FormLabel>
+                    <FormLabel className="flex items-center gap-2"><Building size={16} /> Código da Empresa</FormLabel>
                     <FormControl>
-                      <Input placeholder="Enter company code" {...field} disabled={isLoading} />
+                      <Input placeholder="Ex: 0323" {...field} disabled={isLoading} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -117,9 +120,11 @@ export default function LoginPage() {
                 name="username"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="flex items-center gap-2"><User size={16} /> Email (Login)</FormLabel>
+                     {/* Label updated to 'Login' */}
+                    <FormLabel className="flex items-center gap-2"><User size={16} /> Login</FormLabel>
                     <FormControl>
-                      <Input type="email" placeholder="your.email@example.com" {...field} disabled={isLoading} />
+                       {/* Changed type to text, placeholder updated */}
+                      <Input type="text" placeholder="Seu login" {...field} disabled={isLoading} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -130,9 +135,9 @@ export default function LoginPage() {
                 name="password"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="flex items-center gap-2"><KeyRound size={16} /> Password</FormLabel>
+                    <FormLabel className="flex items-center gap-2"><KeyRound size={16} /> Senha</FormLabel>
                     <FormControl>
-                      <Input type="password" placeholder="••••••••" {...field} disabled={isLoading} />
+                      <Input type="password" placeholder="Sua senha" {...field} disabled={isLoading} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -142,10 +147,10 @@ export default function LoginPage() {
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Logging in...
+                    Entrando...
                   </>
                 ) : (
-                  "Login"
+                  "Entrar" // Button text updated
                 )}
               </Button>
             </form>

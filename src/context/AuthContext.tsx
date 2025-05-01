@@ -1,8 +1,9 @@
+
 "use client"; // Essential for hooks and client-side logic
 
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { collection, query, where, getDocs, limit, doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase'; // Import initialized Firebase services
 import type { Empresa, Entregador, AuthUser } from '@/lib/types'; // App-specific types
 import { Loader2 } from 'lucide-react'; // Loading icon
@@ -10,9 +11,9 @@ import { Loader2 } from 'lucide-react'; // Loading icon
 // Define the shape of the authentication context
 interface AuthContextProps {
   user: AuthUser | null; // The authenticated user's data (or null if not logged in)
-  loading: boolean; // Flag indicating if auth state is being determined
+  loading: boolean; // Flag indicating if auth state is being determined OR during login/logout
   initialLoadComplete: boolean; // Flag indicating if the initial auth check has finished
-  login: (companyCode: string, email: string, pass: string) => Promise<void>; // Login function
+  login: (companyCode: string, loginIdentifier: string, pass: string) => Promise<void>; // Login function (loginIdentifier can be email or username)
   logout: () => Promise<void>; // Logout function
 }
 
@@ -22,39 +23,48 @@ const AuthContext = createContext<AuthContextProps | undefined>(undefined);
 // AuthProvider component: wraps the application to provide auth state
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(null); // Holds the authenticated user data
-  const [loading, setLoading] = useState(true); // True while checking initial auth state or during login/logout
+  const [loading, setLoading] = useState(true); // True during initial check AND login/logout operations
   const [initialLoadComplete, setInitialLoadComplete] = useState(false); // Tracks if the first auth check finished
 
-  // Function to fetch Entregador data based on Firebase User
+  // Function to fetch Entregador data based on Firebase User (using UID)
   const fetchEntregadorData = useCallback(async (firebaseUser: FirebaseUser): Promise<AuthUser | null> => {
-    if (!firebaseUser.email) {
-      console.error("Auth Context: Firebase user missing email.");
-      return null; // Cannot lookup without email
-    }
-    console.log(`Auth Context: Fetching Entregador data for email: ${firebaseUser.email}`);
+    console.log(`Auth Context: Fetching Entregador data for UID: ${firebaseUser.uid}`);
     try {
-      // Query 'entregadores' collection for a document matching the logged-in user's email
+      // Query 'entregadores' collection using the Firebase UID as the document ID or a specific field
+      // Option 1: Assuming UID is the document ID (Common practice)
+      // const entregadorDocRef = doc(db, "entregadores", firebaseUser.uid);
+      // const entregadorDocSnap = await getDoc(entregadorDocRef);
+      // if (!entregadorDocSnap.exists()) { ... }
+      // const entregadorData = entregadorDocSnap.data() as Omit<Entregador, 'id'>;
+      // const entregadorId = entregadorDocSnap.id;
+
+      // Option 2: Querying by a specific field (e.g., 'login' or 'auth_uid') if UID isn't the doc ID
       const q = query(
         collection(db, "entregadores"),
-        where("login", "==", firebaseUser.email), // 'login' field stores the email
-        limit(1) // Expect only one matching driver per email
+        where("login", "==", firebaseUser.email), // Query by email used during login
+        // Or: where("auth_uid", "==", firebaseUser.uid), // If you store UID separately
+        limit(1)
       );
       const querySnapshot = await getDocs(q);
 
       if (querySnapshot.empty) {
-        console.warn(`Auth Context: No Entregador document found for email ${firebaseUser.email}.`);
+        console.warn(`Auth Context: No Entregador document found for UID ${firebaseUser.uid} / email ${firebaseUser.email}.`);
         return null; // No matching driver found in Firestore
       }
 
       // Extract data from the found document
       const entregadorDoc = querySnapshot.docs[0];
-      // Important: Cast carefully, ensure Firestore data matches the Entregador type
-      const entregadorData = entregadorDoc.data() as Omit<Entregador, 'id'>; // Exclude 'id' if using auto-ID
+      const entregadorData = entregadorDoc.data() as Entregador; // Cast directly assuming full Entregador structure
+
+      if (!entregadorData.empresa_codigo || !entregadorData.uniqueId || !entregadorData.nome) {
+          console.error(`Auth Context: Incomplete Entregador data found for UID ${firebaseUser.uid}. Missing required fields.`);
+          return null; // Essential data missing
+      }
 
       // Construct the AuthUser object combining Firebase Auth info and Firestore data
       const authUserData: AuthUser = {
         uid: firebaseUser.uid,
-        email: firebaseUser.email,
+        email: firebaseUser.email, // Email from Firebase Auth
         displayName: firebaseUser.displayName || entregadorData.nome, // Use Firestore name if Auth name is null
         empresaCodigo: entregadorData.empresa_codigo,
         uniqueId: entregadorData.uniqueId, // Traccar ID
@@ -68,8 +78,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error("Auth Context: Error fetching Entregador data from Firestore:", error);
       return null; // Return null on error
     }
-  }, []); // Empty dependency array as fetchEntregadorData doesn't depend on component state
-
+  }, []); // Empty dependency array
 
   // Effect to listen for Firebase authentication state changes
   useEffect(() => {
@@ -95,6 +104,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setUser(null);
       }
       // Mark initial load as complete and set loading to false AFTER processing
+      // Ensure this runs regardless of whether user is found or not
       setLoading(false);
       setInitialLoadComplete(true);
        console.log("Auth Context: Auth state processed. Loading:", false, "InitialLoadComplete:", true, "User:", user ? user.uid : "null");
@@ -106,60 +116,75 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         unsubscribe();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchEntregadorData]); // Include fetchEntregadorData in dependency array
+  }, [fetchEntregadorData]);
 
-  // Login function
-  const login = useCallback(async (companyCode: string, email: string, pass: string) => {
-    console.log(`Auth Context: Attempting login for ${email}, company ${companyCode}`);
+  // Login function adapted to match the website's logic (Entregador only)
+  const login = useCallback(async (companyCode: string, loginIdentifier: string, pass: string) => {
+    console.log(`Auth Context: Attempting login for ${loginIdentifier}, company ${companyCode}`);
     setLoading(true); // Set loading true during login attempt
     try {
-      // 1. Verify Company Code
+      // 1. Verify Company Code exists in Firestore
       const empresaQuery = query(collection(db, "empresas"), where("codigo", "==", companyCode), limit(1));
       const empresaSnapshot = await getDocs(empresaQuery);
       if (empresaSnapshot.empty) {
         throw new Error(`Empresa com código '${companyCode}' não encontrada.`);
       }
-      console.log("Auth Context: Company code verified.");
+      const empresa = empresaSnapshot.docs[0].data() as Empresa;
+      console.log("Auth Context: Company code verified.", empresa.nome);
 
-      // 2. Verify Entregador exists for this company and email *before* Firebase sign-in
+      // 2. Verify Entregador exists for this company and login identifier
+      // Assuming 'login' field in Firestore stores the identifier (email or username)
       const entregadorQuery = query(
         collection(db, "entregadores"),
         where("empresa_codigo", "==", companyCode),
-        where("login", "==", email), // Assuming 'login' field holds the email
+        where("login", "==", loginIdentifier),
         limit(1)
       );
       const entregadorSnapshot = await getDocs(entregadorQuery);
       if (entregadorSnapshot.empty) {
-        throw new Error(`Login inválido para a empresa '${companyCode}'. Verifique o email.`);
+        // NOTE: The website logic tries Traccar API here. We are assuming
+        // Firebase Auth is the source of truth for credentials.
+        // If Traccar verification is *strictly* needed before Firebase auth,
+        // that logic would go here, but it's unusual.
+        // Sticking to Firebase Auth flow for this implementation.
+        throw new Error(`Login inválido para a empresa '${companyCode}'. Verifique o login.`);
       }
-      console.log("Auth Context: Entregador record found for email.");
+      const entregadorData = entregadorSnapshot.docs[0].data() as Entregador;
+      console.log("Auth Context: Entregador record found:", entregadorData.nome);
 
-      // 3. Attempt Firebase Sign In
-      await signInWithEmailAndPassword(auth, email, pass);
-      console.log("Auth Context: Firebase signIn successful.");
-      // NOTE: Setting user state is handled by the onAuthStateChanged listener,
-      // which will fetch the full Entregador data upon successful sign-in.
+      // 3. Attempt Firebase Sign In using the 'login' identifier (assumed to be email for Firebase Auth)
+      // Important: Firebase Auth typically requires email format for signInWithEmailAndPassword.
+      // If 'loginIdentifier' is *not* an email, you need a different auth method
+      // (e.g., custom tokens, or ensure 'loginIdentifier' IS the user's registered email).
+      await signInWithEmailAndPassword(auth, loginIdentifier, pass);
+      console.log("Auth Context: Firebase signIn successful for:", loginIdentifier);
+
+      // NOTE: Setting user state is handled by the onAuthStateChanged listener.
+      // setLoading will be set to false by the listener.
 
     } catch (error: any) {
       console.error("Auth Context: Login process failed:", error);
       // Create user-friendly error messages
       let friendlyMessage = "Falha no login. Verifique suas credenciais e o código da empresa.";
-      if (error.code) { // Firebase Auth errors often have codes
+      if (error.code) { // Firebase Auth errors
         switch (error.code) {
             case 'auth/user-not-found':
             case 'auth/wrong-password':
-            case 'auth/invalid-credential': // Common code for invalid email/password combo
-                friendlyMessage = "Email ou senha inválidos.";
+            case 'auth/invalid-credential':
+                friendlyMessage = "Login ou senha inválidos.";
                 break;
             case 'auth/invalid-email':
-                friendlyMessage = "Formato de email inválido.";
+                friendlyMessage = "Formato de login inválido (esperado email)."; // Adjust if login isn't email
                 break;
             case 'auth/too-many-requests':
                 friendlyMessage = "Muitas tentativas de login. Tente novamente mais tarde.";
                 break;
+             case 'auth/network-request-failed':
+                friendlyMessage = "Erro de rede. Verifique sua conexão.";
+                 break;
             // Add other specific Firebase error codes as needed
         }
-      } else if (error.message.includes("Empresa") || error.message.includes("Entregador")) {
+      } else if (error.message.includes("Empresa") || error.message.includes("Login inválido")) {
          // Use custom messages thrown during validation steps
          friendlyMessage = error.message;
       }
@@ -167,7 +192,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error(friendlyMessage); // Re-throw the processed error message
     }
     // setLoading state will be updated by the onAuthStateChanged listener upon completion
-  }, []); // Empty dependency array as login doesn't depend on component state directly
+  }, []);
 
   // Logout function
   const logout = useCallback(async () => {
@@ -175,21 +200,19 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setLoading(true); // Set loading true during logout
     try {
       await signOut(auth); // Sign out from Firebase
-      // NOTE: Setting user state to null is handled by the onAuthStateChanged listener.
+      // NOTE: Setting user state to null and loading to false is handled by the onAuthStateChanged listener.
       console.log("Auth Context: Firebase signOut successful.");
     } catch (error) {
       console.error("Auth Context: Logout failed:", error);
-      setLoading(false); // Ensure loading is stopped even on error
-      // Optionally re-throw or handle the error (e.g., show a toast)
-      throw error;
+      setLoading(false); // Ensure loading is stopped even on error in signOut itself
+      throw error; // Re-throw error for calling component to handle
     }
-     // setLoading state will be updated by the onAuthStateChanged listener upon completion
-  }, []); // Empty dependency array
+  }, []);
 
   // Show loading indicator ONLY during the initial auth check
   if (loading && !initialLoadComplete) {
      return (
-        <div className="flex min-h-screen items-center justify-center bg-secondary">
+        <div className="flex min-h-screen items-center justify-center bg-secondary" data-testid="initial-auth-loader-container">
             <Loader2 className="h-12 w-12 animate-spin text-primary" data-testid="initial-auth-loader" />
         </div>
      )
