@@ -91,3 +91,4 @@ yarn start
 - **Background Tracking**: True, persistent background location tracking like a native app service is not reliably possible in a standard web browser. The current implementation uses foreground geolocation. PWAs offer some background capabilities via Service Workers, but they are less robust than native services.
 - **Native APIs**: Access to device hardware (beyond basic geolocation, camera, etc.) and deep OS integration (like responding to boot completed) is not possible in a web app.
 - **WebView Integration**: While an `iframe` can display the PWA, the deep `JavascriptInterface` communication described for native Android WebView is not directly applicable. Communication might rely on `postMessage` if the PWA is designed to support it.
+# bibientregador
