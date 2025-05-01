@@ -56,6 +56,9 @@ export async function sendPositionToTraccar(position: TraccarPositionInput): Pro
   params.append('timestamp', position.timestamp.toString());
 
   if (position.altitude !== undefined) params.append('altitude', position.altitude.toString());
+  // OsmAnd protocol expects speed in km/h, Traccar converts internally if needed.
+  // The input 'speed' is expected in knots based on interface, let's send it as is.
+  // Traccar handles various units. If issues arise, adjust conversion here.
   if (position.speed !== undefined) params.append('speed', position.speed.toString());
   if (position.bearing !== undefined) params.append('bearing', position.bearing.toString());
   if (position.accuracy !== undefined) params.append('accuracy', position.accuracy.toString());
@@ -63,12 +66,23 @@ export async function sendPositionToTraccar(position: TraccarPositionInput): Pro
 
   // Use the specific OsmAnd endpoint URL
   const url = `${TRACCAR_OSMAND_ENDPOINT_URL}/?${params.toString()}`;
-  console.log(`Traccar Send Position URL: ${url}`);
+  console.log(`Traccar Send Position URL: ${url}`); // Log URL for debugging
 
   try {
-    const response = await fetch(url, { method: 'GET' });
+    // OsmAnd protocol typically uses POST, even with params in URL
+    const response = await fetch(url, {
+        method: 'POST', // Changed from GET to POST
+        // Headers might be needed depending on server config, but OsmAnd often requires none.
+        // Add headers like 'Content-Type': 'application/x-www-form-urlencoded' if POSTing body data.
+    });
     if (response.ok) {
+      // Even with 2xx, read the response text as OsmAnd might return info/errors in the body
       const responseText = await response.text();
+      // Check for specific success/error strings if the protocol defines them
+      if (responseText.toUpperCase().includes("ERROR")) {
+         console.error(`Traccar Send Position: Server responded OK but returned error message for device ${position.uniqueId}: ${responseText}`);
+         return false;
+      }
       console.log(`Traccar Send Position: Success for device ${position.uniqueId}. Response: ${responseText || '<empty>'}`);
       return true;
     } else {
@@ -78,6 +92,10 @@ export async function sendPositionToTraccar(position: TraccarPositionInput): Pro
     }
   } catch (error) {
     console.error(`Traccar Send Position: Network or other error for device ${position.uniqueId}:`, error);
+    // Add specific error handling if needed (e.g., CORS error detection)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+         console.error("Traccar Send Position: 'Failed to fetch' error. Possible causes: CORS issue, network error, invalid URL, or mixed content.");
+    }
     return false;
   }
 }
@@ -113,11 +131,19 @@ export async function getTraccarDevices(): Promise<Dispositivo[]> {
     } else {
       const errorText = await response.text();
       console.error(`Traccar Get Devices: Failed. Status: ${response.status} ${response.statusText}. Response: ${errorText}`);
+      // Check for specific statuses like 401 Unauthorized
+      if (response.status === 401) {
+         throw new Error(`Failed to fetch Traccar devices: Invalid Credentials (Status: 401)`);
+      }
       throw new Error(`Failed to fetch Traccar devices (Status: ${response.status})`);
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("Traccar Get Devices: Network or other error:", error);
-    throw new Error("Network error while fetching Traccar devices.");
+    // Rethrow with a more specific message if possible
+    if (error.message.includes('Failed to fetch')) {
+         throw new Error("Network error while fetching Traccar devices. Check URL and connectivity.");
+    }
+    throw new Error(error.message || "Error fetching Traccar devices.");
   }
 }
 
@@ -133,12 +159,13 @@ export async function verifyTraccarCredentials(): Promise<boolean> {
         return false; // Credentials not set
     }
 
-    const url = `${TRACCAR_API_BASE_URL}/api/session`; // Endpoint to test credentials
+    // Use a reliable endpoint that requires auth, like /api/session or /api/server
+    const url = `${TRACCAR_API_BASE_URL}/api/session`;
     console.log(`Traccar Verify Credentials: Testing connection to ${url}`);
 
     try {
         const response = await fetch(url, {
-            method: 'GET', // Or POST depending on what /api/session expects for verification
+            method: 'GET', // GET is usually sufficient for /api/session
             headers: {
                 'Authorization': `Basic ${encodedCredentials}`,
                 'Accept': 'application/json',
@@ -146,6 +173,8 @@ export async function verifyTraccarCredentials(): Promise<boolean> {
         });
 
         if (response.ok) {
+             // Attempt to parse JSON to ensure it's a valid session response
+             await response.json();
             console.log("Traccar Verify Credentials: Credentials are valid.");
             return true;
         } else {
