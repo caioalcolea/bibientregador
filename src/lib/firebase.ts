@@ -1,4 +1,3 @@
-
 // src/lib/firebase.ts
 import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
@@ -8,33 +7,40 @@ import { getFunctions, type Functions } from "firebase/functions";
 // import { getAnalytics, isSupported } from "firebase/analytics";
 
 // !! ========================================================================
-// !! IMPORTANT: TROUBLESHOOTING "Firebase: Error (auth/invalid-api-key)"
+// !! VERY IMPORTANT: READ THIS IF YOU SEE FIREBASE ERRORS
 // !! ========================================================================
-// !! If you are seeing this error, please perform the following checks:
+// !! The error "Firebase: Error (auth/invalid-api-key)" or the console message
+// !! "FATAL ERROR: Firebase API Key (NEXT_PUBLIC_FIREBASE_API_KEY) is missing"
+// !! means your Firebase environment variables are not configured correctly.
 // !!
-// !! 1. CHECK .env.local FILE:
-// !!    - Ensure you have a file named `.env.local` in the *root* of your project directory.
-// !!    - Verify that the following line exists in `.env.local` and that the key is correct:
-// !!      NEXT_PUBLIC_FIREBASE_API_KEY="YOUR_ACTUAL_API_KEY_HERE"
-// !!    - Make sure there are no typos and the key is enclosed in quotes if it contains special characters,
-// !!      though typically quotes are not needed unless there are spaces.
+// !! TO FIX THIS:
+// !! 1. CREATE/CHECK `.env.local` FILE:
+// !!    - Make sure you have a file named `.env.local` in the *ROOT* directory
+// !!      of your project (the same directory as `package.json`).
 // !!
-// !! 2. CHECK FIREBASE CONSOLE:
-// !!    - Go to your Firebase project console: https://console.firebase.google.com/
-// !!    - Navigate to Project Settings (click the gear icon ⚙️) -> General tab.
-// !!    - Scroll down to "Your apps".
-// !!    - Find your Web app configuration.
-// !!    - Confirm that the `apiKey` listed there *exactly* matches the value you put in `.env.local`.
+// !! 2. ADD FIREBASE CONFIG TO `.env.local`:
+// !!    - Open `.env.local` and add the following lines, replacing the placeholders
+// !!      with your *actual* Firebase project values:
 // !!
-// !! 3. CHECK AUTHORIZED DOMAINS:
-// !!    - In the Firebase console, navigate to Authentication -> Settings tab -> Authorized domains.
-// !!    - Ensure that the domain you are running your app on (e.g., `localhost`, `your-deployment-domain.com`)
-// !!      is listed. If running locally, `localhost` usually needs to be added explicitly.
+// !!      NEXT_PUBLIC_FIREBASE_API_KEY="YOUR_API_KEY"
+// !!      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="YOUR_AUTH_DOMAIN"
+// !!      NEXT_PUBLIC_FIREBASE_PROJECT_ID="YOUR_PROJECT_ID"
+// !!      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="YOUR_STORAGE_BUCKET"
+// !!      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="YOUR_MESSAGING_SENDER_ID"
+// !!      NEXT_PUBLIC_FIREBASE_APP_ID="YOUR_APP_ID"
+// !!      NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID="YOUR_MEASUREMENT_ID" # Optional
 // !!
-// !! 4. RESTART YOUR DEVELOPMENT SERVER:
-// !!    - After creating or modifying `.env.local`, you MUST restart your Next.js development server
-// !!      (stop the `npm run dev` or `yarn dev` process and run it again). Environment variables
-// !!      are loaded at build/start time.
+// !!    - You can find these values in your Firebase project settings:
+// !!      Project Settings (⚙️) > General > Your apps > Web app > SDK setup and configuration.
+// !!
+// !! 3. **RESTART YOUR DEVELOPMENT SERVER**:
+// !!    - This is crucial! After saving changes to `.env.local`, STOP your
+// !!      development server (Ctrl+C in the terminal) and RESTART it
+// !!      (`npm run dev` or `yarn dev`). Next.js only reads `.env.local` on startup.
+// !!
+// !! 4. CHECK FIREBASE CONSOLE:
+// !!    - Ensure the API key in `.env.local` matches the one in the Firebase console.
+// !!    - Ensure `localhost` is listed under Authentication > Settings > Authorized domains.
 // !! ========================================================================
 
 
@@ -48,9 +54,8 @@ const messagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
 const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
 const measurementId = process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID; // Optional
 
-// Log the API key value as seen by the process for debugging
-// Use typeof window !== 'undefined' to differentiate client/server logs if needed
-// console.log(`Firebase Config Check (firebase.ts - ${typeof window !== 'undefined' ? 'Client' : 'Server'}): NEXT_PUBLIC_FIREBASE_API_KEY =`, apiKey ? `"${apiKey.substring(0, 5)}...${apiKey.substring(apiKey.length - 4)}"` : "NOT FOUND/UNDEFINED"); // Log truncated key
+// Debug log to show if the key is being read (logs only during build/server start or client load)
+// console.log(`Firebase Config Check (firebase.ts): NEXT_PUBLIC_FIREBASE_API_KEY found: ${!!apiKey}`);
 
 
 // --- Validate Required Variables ---
@@ -81,6 +86,7 @@ const firebaseConfig = {
 // Initialize Firebase App (Singleton Pattern)
 function initializeFirebaseApp(): FirebaseApp {
     if (!getApps().length) {
+        console.log("Attempting to initialize Firebase App...");
         try {
             const app = initializeApp(firebaseConfig);
             console.log("Firebase App initialized successfully.");
@@ -89,74 +95,62 @@ function initializeFirebaseApp(): FirebaseApp {
             console.error("🔥🔥🔥 Firebase App Initialization Failed:", initError);
             // Provide specific feedback if it's an invalid config issue during init
             if (initError.message?.includes('invalid-api-key') || initError.code === 'auth/invalid-api-key') {
-                console.error("🔥🔥🔥 Initialization failed specifically due to invalid API key. Double-check the key value and authorized domains in Firebase Console and .env.local.");
+                console.error("🔥🔥🔥 Initialization failed specifically due to invalid API key. Double-check the key value in .env.local and ensure the server was restarted.");
+                console.error("🔥🔥🔥 Also verify 'localhost' is an authorized domain in your Firebase Authentication settings.");
             }
             // Depending on recovery strategy, you might return a dummy app or re-throw
             throw initError; // Re-throw after logging if initialization is critical
         }
     } else {
-        console.log("Firebase App already initialized. Reusing existing instance.");
+        // console.log("Firebase App already initialized. Reusing existing instance.");
         return getApp(); // Get the already initialized app
     }
 }
 
-const app: FirebaseApp = initializeFirebaseApp();
-
-// Initialize other Firebase services safely, checking for API key presence
-let auth: Auth;
-let db: Firestore;
-let functions: Functions;
+let app: FirebaseApp | null = null;
+let auth: Auth | null = null;
+let db: Firestore | null = null;
+let functions: Functions | null = null;
 let analytics: any = null; // Initialize analytics as null
 
-// Only initialize services if the API key was present (or handle appropriately)
-if (apiKey) {
-    try {
-        auth = getAuth(app);
-        db = getFirestore(app);
-        functions = getFunctions(app);
-        console.log("Firebase SDKs (Auth, Firestore, Functions) obtained.");
 
-        // Initialize Analytics only on client-side and if supported
-        // if (typeof window !== 'undefined') {
-        //   isSupported().then((supported) => {
-        //     if (supported) {
-        //       analytics = getAnalytics(app);
-        //       console.log("Firebase Analytics initialized.");
-        //     } else {
-        //       console.log("Firebase Analytics is not supported in this environment.");
-        //     }
-        //   });
-        // }
-    } catch (serviceError: any) {
-        console.error("🔥🔥🔥 Error obtaining Firebase service instances:", serviceError);
-        // If services fail to initialize even with an app, it might indicate deeper config issues
-        // Ensure the app instance is valid before trying to get services
-        if (!app) {
-             console.error("🔥🔥🔥 Cannot initialize Firebase services because Firebase App failed to initialize.");
-        }
-         // Depending on needs, you might assign null or throw
-         // Assigning null might require checks wherever auth/db/functions are used
-         // auth = null as any; db = null as any; functions = null as any; // Example if allowing app to continue degraded
-         throw serviceError; // Or re-throw if services are essential
-    }
-} else {
-    // Handle the case where API Key was missing and services cannot be initialized
-    console.warn("Firebase services (Auth, Firestore, Functions) NOT initialized due to missing API Key.");
-    // Assign null or dummy objects if the rest of the app needs to handle this possibility
-    auth = null as any; // Requires checking for auth existence before use elsewhere
-    db = null as any;   // Requires checking for db existence before use elsewhere
-    functions = null as any; // Requires checking for functions existence before use elsewhere
+try {
+  app = initializeFirebaseApp();
+
+  // Initialize other Firebase services safely, checking for app instance
+  if (app) {
+      auth = getAuth(app);
+      db = getFirestore(app);
+      functions = getFunctions(app);
+      console.log("Firebase SDKs (Auth, Firestore, Functions) obtained.");
+
+      // Initialize Analytics only on client-side and if supported
+      // if (typeof window !== 'undefined') {
+      //   isSupported().then((supported) => {
+      //     if (supported) {
+      //       analytics = getAnalytics(app as FirebaseApp); // Cast needed if app can be null initially
+      //       console.log("Firebase Analytics initialized.");
+      //     } else {
+      //       console.log("Firebase Analytics is not supported in this environment.");
+      //     }
+      //   });
+      // }
+  } else {
+      // This case should theoretically not be reached if initializeFirebaseApp throws on critical failure
+      console.error("🔥🔥🔥 Firebase App is null after initialization attempt. Services cannot be obtained.");
+  }
+
+} catch (error) {
+    // This catches errors from initializeFirebaseApp or getAuth/getFirestore/getFunctions
+     console.error("🔥🔥🔥 Critical error during Firebase setup:", error);
+     // Set services to null explicitly if initialization failed
+     app = null;
+     auth = null;
+     db = null;
+     functions = null;
 }
 
-
+// Export potentially null services. Consumers must handle the possibility of null.
 export { app, auth, db, functions, analytics };
 
-// Reminder: Ensure you have created a .env.local file in the root of your project
-// and added your Firebase project configuration details there:
-// NEXT_PUBLIC_FIREBASE_API_KEY="your_api_key"
-// NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="your_auth_domain"
-// NEXT_PUBLIC_FIREBASE_PROJECT_ID="your_project_id"
-// NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="your_storage_bucket"
-// NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="your_messaging_sender_id"
-// NEXT_PUBLIC_FIREBASE_APP_ID="your_app_id"
-// NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID="your_measurement_id" // Optional
+// Reminder comments are covered by the large block at the top
