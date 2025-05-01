@@ -41,6 +41,7 @@ import { getFunctions, type Functions } from "firebase/functions";
 // !! 4. CHECK FIREBASE CONSOLE:
 // !!    - Ensure the API key in `.env.local` matches the one in the Firebase console.
 // !!    - Ensure `localhost` is listed under Authentication > Settings > Authorized domains.
+// !!    - Ensure the correct Firebase project is being used.
 // !! ========================================================================
 
 
@@ -96,7 +97,7 @@ function initializeFirebaseApp(): FirebaseApp {
             // Provide specific feedback if it's an invalid config issue during init
             if (initError.message?.includes('invalid-api-key') || initError.code === 'auth/invalid-api-key') {
                 console.error("🔥🔥🔥 Initialization failed specifically due to invalid API key. Double-check the key value in .env.local and ensure the server was restarted.");
-                console.error("🔥🔥🔥 Also verify 'localhost' is an authorized domain in your Firebase Authentication settings.");
+                console.error("🔥🔥🔥 Also verify 'localhost' is an authorized domain in your Firebase Authentication settings and that the correct Firebase project is being used.");
             }
             // Depending on recovery strategy, you might return a dummy app or re-throw
             throw initError; // Re-throw after logging if initialization is critical
@@ -151,6 +152,9 @@ try {
 }
 
 // Export potentially null services. Consumers must handle the possibility of null.
+// Ensure services are only exported if the app initialization didn't critically fail.
+// Although the individual variables might be null if `getAuth` etc. fail,
+// exporting them allows checks like `if (auth)` in consuming components.
 export { app, auth, db, functions, analytics };
 
 // Reminder comments are covered by the large block at the top
