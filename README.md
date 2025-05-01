@@ -93,3 +93,4 @@ yarn start
 - **WebView Integration**: While an `iframe` can display the PWA, the deep `JavascriptInterface` communication described for native Android WebView is not directly applicable. Communication might rely on `postMessage` if the PWA is designed to support it.
 # bibientregador
 # bibientregador
+# bibientregador
