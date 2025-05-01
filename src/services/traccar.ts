@@ -71,9 +71,12 @@ export async function sendPositionToTraccar(position: TraccarPositionInput): Pro
   try {
     // OsmAnd protocol typically uses POST, even with params in URL
     const response = await fetch(url, {
-        method: 'POST', // Changed from GET to POST
-        // Headers might be needed depending on server config, but OsmAnd often requires none.
-        // Add headers like 'Content-Type': 'application/x-www-form-urlencoded' if POSTing body data.
+        method: 'POST', // Keep POST as OsmAnd often expects it
+        headers: {
+          // Add a basic Content-Type header. Even though there's no body,
+          // this can sometimes help with CORS or server expectations for POST.
+          'Content-Type': 'text/plain',
+        }
     });
     if (response.ok) {
       // Even with 2xx, read the response text as OsmAnd might return info/errors in the body
